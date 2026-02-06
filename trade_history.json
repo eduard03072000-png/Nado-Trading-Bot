@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-02-05 23:48:10",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "SHORT",
+    "size": 20.0,
+    "entry_price": 88.255,
+    "exit_price": 88.245,
+    "pnl": 0.2,
+    "pnl_percent": 0.011330802787377487
+  }
+]

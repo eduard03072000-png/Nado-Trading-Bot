@@ -1,0 +1,149 @@
+{
+  "integration_test": {
+    "status": "SUCCESS",
+    "connection_method": "MCP (Claude in Chrome)",
+    "dex_platform": "Nado",
+    "network": "Ink Mainnet",
+    "timestamp": "2026-02-04T13:53:05.453Z",
+    "url": "https://app.nado.xyz/perpetuals?market=SOLUSDT0"
+  },
+  "market_data": {
+    "symbol": "SOLUSDT0",
+    "type": "Perpetual Futures",
+    "current_price": "96.92",
+    "oracle_price": "96.90",
+    "index_price": "96.98",
+    "change_24h": {
+      "absolute": "-5.75",
+      "percentage": "-5.60%"
+    },
+    "volume_24h": "48,863,715",
+    "open_interest": "5,444,259",
+    "funding": {
+      "rate_1h": "-0.0029%",
+      "rate_annual": "-25.10%"
+    }
+  },
+  "account_info": {
+    "connected_wallet": "0xA221a1B881630a7A032CF9F16AB9a2E881B369a4",
+    "balance": {
+      "available_margin": 474.90,
+      "total_equity": 499.87,
+      "unrealized_perp_pnl": 0.00,
+      "unrealized_spot_pnl": 0.31
+    },
+    "leverage": {
+      "current": 0.0,
+      "max": 5.0
+    },
+    "margin": {
+      "usage_percentage": 0.00,
+      "type": "isolated"
+    },
+    "fees": {
+      "maker": "0.01%",
+      "taker": "0.035%"
+    }
+  },
+  "websocket_status": {
+    "connection": "ACTIVE",
+    "subscriptions": [
+      "market_data",
+      "orderbook",
+      "trades",
+      "candlesticks"
+    ],
+    "metrics": {
+      "candlesticks_received": 329,
+      "resolution": "1m"
+    }
+  },
+  "available_features": {
+    "trading": {
+      "order_types": [
+        "market",
+        "limit",
+        "advanced"
+      ],
+      "positions": [
+        "long",
+        "short"
+      ],
+      "margin_modes": [
+        "isolated",
+        "cross"
+      ]
+    },
+    "risk_management": {
+      "leverage": {
+        "min": 1,
+        "max": 5,
+        "current": 5
+      },
+      "order_options": [
+        "post_only",
+        "reduce_only",
+        "tp_sl"
+      ]
+    },
+    "wallet_operations": [
+      "deposit",
+      "withdraw"
+    ]
+  },
+  "performance_metrics": {
+    "page_load_ms": {
+      "all_markets": 418,
+      "subaccount_summary": 429,
+      "subaccount_snapshots": 522,
+      "trading_view_charts": 831
+    },
+    "total_load_time_ms": 831
+  },
+  "technical_stack": {
+    "frontend": "Next.js (React)",
+    "charts": "TradingView Widget",
+    "graphics": "THREE.js (WebGL)",
+    "realtime": "WebSocket",
+    "wallet": "EVM-compatible (Ink network)"
+  },
+  "api_endpoints_detected": {
+    "websocket": {
+      "status": "active",
+      "note": "Endpoint URL needs to be reverse-engineered from network traffic"
+    },
+    "rest_api": {
+      "status": "unknown",
+      "note": "Check official documentation at https://docs.nado.xyz/"
+    }
+  },
+  "integration_recommendations": {
+    "priority": [
+      {
+        "rank": 1,
+        "method": "WebSocket",
+        "reason": "Real-time market data and orderbook updates",
+        "implementation": "Reverse-engineer WS protocol or use official SDK"
+      },
+      {
+        "rank": 2,
+        "method": "REST API",
+        "reason": "Historical data and account management",
+        "implementation": "Check official docs for public/private endpoints"
+      },
+      {
+        "rank": 3,
+        "method": "MCP Browser Automation",
+        "reason": "Fallback for operations not available via API",
+        "implementation": "Use Claude in Chrome for UI interaction"
+      }
+    ],
+    "next_steps": [
+      "Find official Nado SDK or API documentation",
+      "Intercept and analyze WebSocket messages",
+      "Create Python client in src/dex/nado_client.py",
+      "Test integration with small amounts",
+      "Implement trading strategies"
+    ]
+  }
+}

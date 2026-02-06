@@ -1,0 +1,22 @@
+{
+  "dex": {
+    "name": "Nado",
+    "url": "https://app.nado.xyz/perpetuals",
+    "referral_code": "FMswek9"
+  },
+  "trading": {
+    "symbol": "BTC-PERP",
+    "position_size": 0.001,
+    "leverage": 1,
+    "auto_trade": false,
+    "max_daily_loss": 50,
+    "max_positions": 2,
+    "grid_strategy": {
+      "enabled": true,
+      "max_orders_per_side": 3,
+      "price_deviation_percent": 0.7,
+      "take_profit_percent": 0.8,
+      "stop_loss_percent": 0.5
+    }
+  }
+}

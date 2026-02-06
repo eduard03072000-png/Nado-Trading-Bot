@@ -1,0 +1,36 @@
+{
+  "strategies": {
+    "grid_trading": {
+      "enabled": true,
+      "description": "Открытие лонг и шорт позиций сеткой около рыночной цены",
+      "params": {
+        "grid_levels": 3,
+        "spacing_percent": 0.5,
+        "profit_per_trade": 1.0
+      }
+    },
+    "trailing_profit": {
+      "enabled": true,
+      "description": "Динамическое смещение TP при достижении порога",
+      "params": {
+        "activation_percent": 1.0,
+        "trail_step_percent": 0.3
+      }
+    },
+    "volume_maker": {
+      "enabled": true,
+      "description": "Максимизация объема с минимальными затратами",
+      "params": {
+        "min_profit_margin": 0.3,
+        "quick_close": true
+      }
+    },
+    "range_trading": {
+      "enabled": false,
+      "description": "Торговля в диапазоне с определением поддержки/сопротивления",
+      "params": {
+        "range_detection_periods": 50
+      }
+    }
+  }
+}
