@@ -112,6 +112,62 @@ python telegram_trading_bot.py
 - ✅ Position size checks
 - ✅ Error handling
 
+## 📱 Features Overview
+
+### Main Menu
+Full control through intuitive Telegram interface:
+- 🟢 **LONG** / 🔴 **SHORT** - Quick position opening
+- 📊 **Positions** - Monitor active trades with real-time P&L
+- 💰 **Balance** - Check equity and account health
+- 📈 **Prices** - View current market prices
+- 🎯 **TP/SL Calculator** - Calculate risk/reward scenarios
+
+### 🤖 Grid Auto-Trader
+Automated grid trading strategy:
+- Places LONG and SHORT orders automatically
+- Configurable grid spacing and offset
+- Automatic TP/SL execution
+- 24/7 unattended operation
+- Supports: BTC-PERP, ETH-PERP, SOL-PERP, INK-PERP
+
+### 🧠 ML Auto-Trader
+Machine learning-based trading:
+- Analyzes market indicators (RSI, MACD, Moving Averages, Volatility)
+- Configurable confidence threshold (50-70%)
+- Opens positions only on strong ML signals
+- Automatic TP/SL monitoring and execution
+- Real-time prediction updates (UP/DOWN/SIDEWAYS)
+
+### 📊 Position Management
+- Real-time P&L tracking with color coding
+- Entry price, current price, and position value
+- Automatic TP/SL price display
+- One-click position closing
+- Support for multiple simultaneous positions
+
+## 🎯 How It Works
+
+1. **Manual Trading**
+   - Select LONG or SHORT
+   - Choose trading pair
+   - Set position size
+   - Configure TP/SL levels
+   - Confirm and execute
+
+2. **Grid Auto**
+   - Select trading pair
+   - Set grid offset from current price
+   - Bot places orders automatically
+   - Closes at TP/SL and repeats
+
+3. **ML Auto**
+   - Select trading pair and size
+   - Set minimum ML confidence (e.g., 55%)
+   - Choose TP/SL scenario
+   - Bot analyzes market every minute
+   - Opens positions on strong signals
+   - Monitors and closes at TP/SL
+
 ## License
 
 MIT License
