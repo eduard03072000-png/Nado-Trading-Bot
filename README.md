@@ -1,4 +1,4 @@
-# NADO DEX Trading Bot
+# Nado-Trading-Bot
 
 Telegram-based trading bot for NADO DEX with ML prediction and automated trading strategies.
 
@@ -21,8 +21,8 @@ Telegram-based trading bot for NADO DEX with ML prediction and automated trading
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/YOUR_USERNAME/nado-dex-trading-bot.git
-cd nado-dex-trading-bot
+git clone https://github.com/eduard03072000-png/Nado-Trading-Bot.git
+cd Nado-Trading-Bot
 ```
 
 2. Install dependencies:
