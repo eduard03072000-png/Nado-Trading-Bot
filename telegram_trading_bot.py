@@ -3,12 +3,17 @@ Telegram Trading Bot - Full NADO DEX Integration
 """
 import logging
 import os
+import sys
 import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, ConversationHandler
 import config
-from trading_dashboard import TradingDashboard, PRODUCTS
+# Import new Linked Signer dashboard
+sys.path.insert(0, os.path.dirname(__file__))
+from trading_dashboard_v2 import TradingDashboard, PRODUCTS
 from tp_sl_calculator import TPSLCalculator
+from trade_history_manager import TradeHistoryManager
+from history_handlers import show_history_menu, show_period_summary, show_period_details
 from decimal import Decimal
 import asyncio
 
@@ -22,6 +27,9 @@ logger = logging.getLogger(__name__)
 # Global dashboard instance
 dashboard = None
 
+# History manager
+history_manager = None
+
 # TP/SL calculator
 calc = None
 
@@ -33,6 +41,31 @@ active_traders = {
 
 # Auto-traders status file
 TRADERS_STATUS_FILE = os.path.join(os.path.dirname(__file__), "traders_status.json")
+
+# User data file
+USER_DATA_FILE = os.path.join(os.path.dirname(__file__), "user_data.json")
+
+def load_user_data(user_id):
+    """Load user's subaccount from file"""
+    try:
+        with open(USER_DATA_FILE, 'r') as f:
+            data = json.load(f)
+            return data.get(str(user_id))
+    except FileNotFoundError:
+        return None
+
+def save_user_data(user_id, data):
+    """Save user's subaccount to file"""
+    try:
+        with open(USER_DATA_FILE, 'r') as f:
+            all_data = json.load(f)
+    except FileNotFoundError:
+        all_data = {}
+    
+    all_data[str(user_id)] = data
+    
+    with open(USER_DATA_FILE, 'w') as f:
+        json.dump(all_data, f, indent=2)
 
 def save_traders_status():
     """Save traders status to file"""
@@ -58,16 +91,50 @@ WAITING_PRODUCT, WAITING_SIZE, WAITING_LEVERAGE, WAITING_GRID_PRODUCT, WAITING_G
 WAITING_AUTO_PRODUCT, WAITING_AUTO_SIZE, WAITING_AUTO_TP_SL, WAITING_AUTO_GRID_OFFSET = range(7, 11)
 WAITING_ML_PRODUCT, WAITING_ML_SIZE, WAITING_AUTO_ML_CONFIDENCE, WAITING_ML_TP_SL = range(11, 15)
 WAITING_TPSL_PRODUCT = 15  # Separate state for calculator
+WAITING_SUBACCOUNT_ID = 16  # For linked signer setup
+WAITING_TP_MODE, WAITING_TP_PRICE, WAITING_TP_PERCENT = range(17, 20)  # For TP setup
 
 # Temporary user data storage
 user_data_storage = {}
 
-# Allowed users
-ALLOWED_USERS = [677623236, 476105926]  # Add your ID here
+# Allowed users - ПУСТОЙ список = доступ для ВСЕХ
+ALLOWED_USERS = []
 
+# User subaccounts storage
+USER_SUBACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), "user_subaccounts.json")
+
+def load_user_subaccounts():
+    """Загрузить субаккаунты юзеров"""
+    try:
+        if not os.path.exists(USER_SUBACCOUNTS_FILE):
+            return {}
+        with open(USER_SUBACCOUNTS_FILE, 'r') as f:
+            data = json.load(f)
+            return data.get('user_subaccounts', {})
+    except Exception as e:
+        logger.error(f"Error loading subaccounts: {e}")
+        return {}
+
+def save_user_subaccounts(subaccounts):
+    """Сохранить субаккаунты юзеров"""
+    with open(USER_SUBACCOUNTS_FILE, 'w') as f:
+        json.dump({'user_subaccounts': subaccounts}, f, indent=2)
+
+def get_user_subaccount(user_id):
+    """Получить субаккаунт юзера"""
+    subaccounts = load_user_subaccounts()
+    return subaccounts.get(str(user_id))
+
+def set_user_subaccount(user_id, subaccount_id):
+    """Сохранить субаккаунт юзера"""
+    subaccounts = load_user_subaccounts()
+    subaccounts[str(user_id)] = subaccount_id
+    save_user_subaccounts(subaccounts)
 
 def check_access(update: Update) -> bool:
     """Check user access"""
+    if not ALLOWED_USERS:
+        return True
     user_id = update.effective_user.id
     return user_id in ALLOWED_USERS
 
@@ -117,28 +184,58 @@ def get_products_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/start command"""
     if not check_access(update):
-        await update.message.reply_text("❌ You don't have access to this bot")
+        if update.message:
+            await update.message.reply_text("❌ You don't have access to this bot")
         return
     
-    global dashboard, calc
+    user_id = update.effective_user.id
     
-    if dashboard is None:
-        dashboard = TradingDashboard()
+    # Проверяем есть ли у юзера субаккаунт
+    user_subaccount = get_user_subaccount(user_id)
     
-    # Reload data
-    dashboard.entry_prices = dashboard.load_positions_data()
+    if not user_subaccount:
+        # Юзер не зарегистрирован - просим ввести subaccount
+        message_text = (
+            "👋 Добро пожаловать!\n\n"
+            "Для работы с ботом нужен ваш NADO DEX Subaccount ID.\n\n"
+            "📋 Как получить Subaccount ID:\n"
+            "1. Откройте https://app.nado.xyz/\n"
+            "2. Подключите кошелек\n"
+            "3. Скопируйте Subaccount ID из профиля\n\n"
+            "Введите ваш Subaccount ID:"
+        )
+        
+        if update.message:
+            await update.message.reply_text(message_text)
+        else:
+            await update.callback_query.message.edit_text(message_text)
+        
+        return WAITING_SUBACCOUNT_ID
+    
+    # Юзер зарегистрирован - создаём dashboard
+    global dashboard, calc, history_manager
+    
+    # ВСЕГДА пересоздаем dashboard для текущего юзера
+    logger.info(f"🔗 Creating dashboard for user {user_id}")
+    dashboard = TradingDashboard(user_subaccount)
+    
+    # Инициализируем history manager если ещё не создан
+    if history_manager is None:
+        history_manager = TradeHistoryManager(f'trade_history_{user_id}.json')
     
     if calc is None:
         calc = TPSLCalculator(leverage=dashboard.leverage)
     
-    # Load traders status from file
+    # Load traders status (ВСЕГДА обновляем при заходе в главное меню)
     traders_status = load_traders_status()
     
-    # Check auto-traders status
-    grid_status = "🟢 Active" if traders_status.get('grid', False) else "⚪ Off"
-    ml_status = "🟢 Active" if traders_status.get('ml', False) else "⚪ Off"
+    # Проверяем реальный статус running из active_traders
+    grid_running = active_traders.get('grid') and active_traders['grid'].running
+    ml_running = active_traders.get('ml') and active_traders['ml'].running
     
-    # Get ML prediction if ML Auto is running
+    grid_status = "🟢 Active" if grid_running else "⚪ Off"
+    ml_status = "🟢 Active" if ml_running else "⚪ Off"
+    
     ml_prediction_text = ""
     if active_traders['ml'] and active_traders['ml'].running:
         pred = active_traders['ml'].last_prediction
@@ -150,26 +247,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ml_prediction_text = f"\n   └ Prediction: {emoji} {direction} ({confidence:.0%})"
     
     welcome_text = (
-        "🤖 <b>NADO DEX Trading Bot</b>\n\n"
-        f"🌐 Network: <b>{dashboard.network.upper()}</b>\n"
-        f"👛 Wallet: <code>{dashboard.wallet[:10]}...{dashboard.wallet[-8:]}</code>\n"
-        f"⚙️ Leverage: <b>{dashboard.leverage}x</b>\n\n"
+        f"🤖 <b>NADO DEX Trading Bot</b>\n\n"
+        f"🌐 Network: <code>{dashboard.network.upper()}</code>\n"
+        f"👛 Subaccount: <code>{user_subaccount[:10]}...{user_subaccount[-8:]}</code>\n"
+        f"⚡ Leverage: <code>{dashboard.leverage}x</code>\n\n"
         f"🤖 Auto Grid: {grid_status}\n"
         f"🧠 ML Auto: {ml_status}{ml_prediction_text}\n\n"
-        "Select action:"
+        f"Выберите действие:"
     )
     
     if update.message:
         await update.message.reply_text(
             welcome_text,
-            parse_mode='HTML',
-            reply_markup=get_main_keyboard()
+            reply_markup=get_main_keyboard(),
+            parse_mode='HTML'
         )
     else:
         await update.callback_query.message.edit_text(
             welcome_text,
-            parse_mode='HTML',
-            reply_markup=get_main_keyboard()
+            reply_markup=get_main_keyboard(),
+            parse_mode='HTML'
         )
 
 
@@ -268,86 +365,108 @@ async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show positions"""
+    """Улучшенное отображение позиций с entry, current, P&L и Set TP"""
     query = update.callback_query
     await query.answer()
     
     positions = dashboard.get_positions()
     
+    # Кнопки управления (всегда доступны)
+    base_keyboard = []
+    
     if not positions:
-        await query.edit_message_text(
-            "📊 <b>ПОЗИЦИИ</b>\n\n✅ No open positions",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Refresh", callback_data='positions')],
-                [InlineKeyboardButton("« Back", callback_data='back')]
+        text = "📊 <b>ПОЗИЦИИ</b>\n\n✅ Нет открытых позиций"
+        # Добавляем кнопку отмены ордеров для каждого продукта
+        for pid, symbol in PRODUCTS.items():
+            base_keyboard.append([
+                InlineKeyboardButton(
+                    f"🚫 Отменить {symbol}",
+                    callback_data=f'cancel_orders_{pid}'
+                )
             ])
+        base_keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data='positions')])
+        base_keyboard.append([InlineKeyboardButton("« Назад", callback_data='back')])
+        
+        await query.edit_message_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(base_keyboard)
         )
         return
     
-    text = "📊 <b>OPEN POSITIONS</b>\n\n"
-    total_pnl = 0
-    
+    text = "📊 <b>ОТКРЫТЫЕ ПОЗИЦИИ</b>\n\n"
     keyboard = []
     
     for i, pos in enumerate(positions, 1):
         side_emoji = "🟢" if pos["side"] == "LONG" else "🔴"
         product_id = pos['product_id']
         current_price = pos['price']
+        symbol = pos['symbol']
+        amount = abs(pos['amount'])
         
-        # Получаем данные о цене входа
-        entry_data = dashboard.entry_prices.get(product_id)
-        entry_price = entry_data.get('entry_price') if entry_data else None
+        # Получаем entry price из сохраненных данных
+        entry_data = dashboard.entry_prices.get(str(product_id))  # Ключ - строка!
         
-        # Рассчитываем P&L
-        pnl = None
-        pnl_percent = None
-        pnl_str = ""
-        
-        if current_price and entry_price:
-            pnl = dashboard.calculate_pnl(product_id, current_price, pos['amount'])
-            if pnl is not None:
-                # Расчет процента P&L
-                entry_value = abs(pos['amount']) * entry_price
-                pnl_percent = (pnl / entry_value * 100) if entry_value > 0 else 0
-                
-                pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-                pnl_str = f"\nP&L: {pnl_emoji} ${pnl:+,.2f} ({pnl_percent:+.2f}%)"
-                total_pnl += pnl
-        
-        # Формирование текста позиции
-        pos_text = f"{side_emoji} <b>{pos['symbol']}</b>\n"
-        pos_text += f"Size: {abs(pos['amount']):.4f}\n"
-        
-        # Добавляем цены
-        if entry_price:
-            pos_text += f"Entry: ${entry_price:,.2f}\n"
-        pos_text += f"Price: ${current_price:,.2f}\n"
-        pos_text += f"Value: ${pos['notional']:,.2f}"
-        
-        # Добавляем TP/SL если есть
         if entry_data:
+            entry_price = entry_data['entry_price']
             tp_price = entry_data.get('tp_price')
             sl_price = entry_data.get('sl_price')
-            if tp_price:
-                pos_text += f"\n🎯 TP: ${tp_price:,.2f}"
-            if sl_price:
-                pos_text += f"\n🛑 SL: ${sl_price:,.2f}"
+        else:
+            entry_price = current_price
+            tp_price = None
+            sl_price = None
         
-        pos_text += pnl_str + "\n\n"
-        text += pos_text
+        # Рассчитываем P&L правильно
+        # P&L = (current - entry) * amount для LONG
+        # P&L = (entry - current) * amount для SHORT
+        if pos['side'] == 'LONG':
+            raw_pnl = (current_price - entry_price) * amount
+        else:
+            raw_pnl = (entry_price - current_price) * amount
         
-        keyboard.append([InlineKeyboardButton(
-            f"❌ Close {pos['symbol']}",
-            callback_data=f'close_{pos["product_id"]}'
-        )])
+        # Процент от вложенного капитала (entry * amount)
+        invested = entry_price * amount
+        pnl_percent = (raw_pnl / invested * 100) if invested > 0 else 0
+        
+        pnl_emoji = "🟢" if raw_pnl >= 0 else "🔴"
+        pnl_str = f"{pnl_emoji} ${raw_pnl:+,.2f} ({pnl_percent:+.2f}%)"
+        
+        # Формируем детальный текст позиции
+        pos_text = (
+            f"{side_emoji} <b>{symbol}</b>\n"
+            f"├ Размер: {amount:.4f}\n"
+            f"├ Вход: ${entry_price:,.2f}\n"
+            f"├ Сейчас: ${current_price:,.2f}\n"
+            f"├ Объем: ${pos['notional']:,.2f}\n"
+            f"└ P&L: {pnl_str}\n"
+        )
+        
+        # Добавляем TP/SL если установлены
+        if tp_price:
+            pos_text += f"   🎯 TP: ${tp_price:,.2f}\n"
+        if sl_price:
+            pos_text += f"   🛑 SL: ${sl_price:,.2f}\n"
+        
+        text += pos_text + "\n"
+        
+        # Кнопки управления позицией
+        keyboard.append([
+            InlineKeyboardButton(
+                f"🎯 TP {symbol}",
+                callback_data=f'set_tp_{product_id}'
+            ),
+            InlineKeyboardButton(
+                f"🚫 Отменить ордера {symbol}",
+                callback_data=f'cancel_orders_{product_id}'
+            ),
+            InlineKeyboardButton(
+                f"❌ Закрыть {symbol}",
+                callback_data=f'close_{product_id}'
+            )
+        ])
     
-    if total_pnl != 0:
-        pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
-        text += f"\n{pnl_emoji} <b>Total P&L: ${total_pnl:+,.2f}</b>"
-    
-    keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data='positions')])
-    keyboard.append([InlineKeyboardButton("« Back", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data='positions')])
+    keyboard.append([InlineKeyboardButton("« Назад", callback_data='back')])
     
     await query.edit_message_text(
         text,
@@ -357,62 +476,8 @@ async def show_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show history"""
-    query = update.callback_query
-    await query.answer()
-    
-    # Перезагружаем историю на случай обновлений
-    dashboard.trade_history = dashboard.load_trade_history()
-    
-    if not dashboard.trade_history:
-        await query.edit_message_text(
-            "📜 <b>TRADING HISTORY</b>\n\nℹ️ History пуста",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Refresh", callback_data='history')],
-                [InlineKeyboardButton("« Back", callback_data='back')]
-            ])
-        )
-        return
-    
-    # Статистика
-    total_trades = len(dashboard.trade_history)
-    winning_trades = sum(1 for t in dashboard.trade_history if t['pnl'] > 0)
-    losing_trades = sum(1 for t in dashboard.trade_history if t['pnl'] < 0)
-    total_pnl = sum(t['pnl'] for t in dashboard.trade_history)
-    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-    
-    text = (
-        "📜 <b>TRADING HISTORY</b>\n\n"
-        f"📊 Total trades: {total_trades}\n"
-        f"🟢 Winning: {winning_trades}\n"
-        f"🔴 Losing: {losing_trades}\n"
-        f"📈 Win rate: {win_rate:.1f}%\n"
-    )
-    
-    pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
-    text += f"{pnl_emoji} <b>Total P&L: ${total_pnl:+,.2f}</b>\n\n"
-    
-    text += "<b>Last 5 trades:</b>\n\n"
-    
-    for trade in reversed(dashboard.trade_history[-5:]):
-        pnl_emoji = "🟢" if trade['pnl'] >= 0 else "🔴"
-        side_emoji = "🟢" if trade['side'] == "LONG" else "🔴"
-        
-        text += (
-            f"{side_emoji} {trade['symbol']}\n"
-            f"  Entry: ${trade['entry_price']:,.2f} → Exit: ${trade['exit_price']:,.2f}\n"
-            f"  {pnl_emoji} P&L: ${trade['pnl']:+,.2f} ({trade['pnl_percent']:+.2f}%)\n\n"
-        )
-    
-    await query.edit_message_text(
-        text,
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Refresh", callback_data='history')],
-            [InlineKeyboardButton("« Back", callback_data='back')]
-        ])
-    )
+    """Show history menu"""
+    await show_history_menu(update, context, history_manager)
 
 
 async def open_position_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -571,11 +636,52 @@ async def close_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
     product_id = int(query.data.split('_')[1])
     symbol = PRODUCTS[product_id]
     
+    # Получаем данные позиции ДО закрытия
+    positions = dashboard.get_positions()
+    position = next((p for p in positions if p['product_id'] == product_id), None)
+    
+    if not position:
+        await query.edit_message_text(
+            f"❌ Позиция {symbol} не найдена",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data='back')]])
+        )
+        return
+    
+    # Получаем entry price
+    entry_data = dashboard.entry_prices.get(str(product_id))
+    entry_price = entry_data['entry_price'] if entry_data else position['price']
+    
+    # Текущая цена (exit price)
+    exit_price = position['price']
+    
+    # Размер позиции
+    position_size = abs(position['amount'])
+    base_size = position_size / dashboard.leverage
+    
     await query.edit_message_text(f"🔄 Closing position {symbol}...")
     
     result = dashboard.close_position(product_id)
     
     if result:
+        # Рассчитываем комиссии
+        entry_notional = entry_price * position_size
+        exit_notional = exit_price * position_size
+        entry_fee = entry_notional * 0.0001
+        exit_fee = exit_notional * 0.0001
+        
+        # Записываем в историю
+        history_manager.add_trade(
+            symbol=symbol,
+            product_id=product_id,
+            side=position['side'],
+            entry_price=entry_price,
+            exit_price=exit_price,
+            size=base_size,
+            leverage=dashboard.leverage,
+            entry_fee=entry_fee,
+            exit_fee=exit_fee
+        )
+        
         await query.edit_message_text(
             f"✅ Позиция {symbol} закрыта!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« To menu", callback_data='back')]])
@@ -584,6 +690,37 @@ async def close_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"❌ Position close error {symbol}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='back')]])
+        )
+
+
+async def cancel_orders_for_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отменить все ордера для продукта"""
+    query = update.callback_query
+    await query.answer()
+    
+    product_id = int(query.data.split('_')[2])
+    symbol = PRODUCTS[product_id]
+    
+    await query.edit_message_text(f"🔄 Отмена ордеров {symbol}...")
+    
+    try:
+        from nado_protocol.engine_client.types.execute import CancelProductOrdersParams
+        
+        params = CancelProductOrdersParams(
+            sender=dashboard.user_subaccount,
+            productIds=[product_id]
+        )
+        
+        result = dashboard.client.market.cancel_product_orders(params)
+        
+        await query.edit_message_text(
+            f"✅ Ордера {symbol} отменены!",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« К меню", callback_data='back')]])
+        )
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ Ошибка: {e}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Назад", callback_data='back')]])
         )
 
 
@@ -984,8 +1121,6 @@ async def auto_grid_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Pair: <b>{product}</b>\n"
             f"💰 Size: <b>{trader.base_size}</b>\n"
             f"📏 Grid offset: <b>{trader.grid_offset}%</b>\n"
-            f"🎯 TP: <b>{trader.tp_percent}%</b>\n"
-            f"🛑 SL: <b>{trader.sl_percent}%</b>\n\n"
             "Бот автоматически:\n"
             "• Размещает Grid сетку\n"
             "• Мониторит позиции\n"
@@ -1093,55 +1228,48 @@ async def auto_grid_handle_size(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def auto_grid_handle_offset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Grid offset handling"""
     try:
         offset = float(update.message.text)
         if offset <= 0 or offset > 5:
             raise ValueError
-        
+
         product_id = context.user_data['auto_grid_product']
         size = context.user_data['auto_grid_size']
-        context.user_data['auto_grid_offset'] = offset
-        
         symbol = PRODUCTS[product_id]
-        price = dashboard.get_market_price(product_id)
-        
-        # Показываем готовые сценарии TP/SL
-        scenarios = calc.calculate_scenarios(
-            product_symbol=symbol,
-            entry_price=price,
-            size=size,
-            is_long=True
+
+        await update.message.reply_text("🔄 Starting Grid Auto-Trader...")
+
+        from grid_autotrader import GridAutoTrader
+
+        trader = GridAutoTrader(
+            dashboard=dashboard,
+            product_id=product_id,
+            base_size=size,
+            grid_offset=offset
         )
-        
-        text = (
-            f"🤖 <b>GRID AUTO: {symbol}</b>\n"
-            f"💰 Size: <b>{size}</b>\n"
-            f"📏 Grid: <b>±{offset}%</b>\n\n"
-            "<b>Select TP/SL scenario:</b>\n\n"
-        )
-        
-        keyboard = []
-        for i, s in enumerate(scenarios):
-            label = f"{s['name']} (TP:{s['tp_percent']}% SL:{s['sl_percent']}%)"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f'auto_grid_tpsl_{i}')])
-        
-        keyboard.append([InlineKeyboardButton("« Back", callback_data='back')])
-        
+
+        if active_traders['grid'] and active_traders['grid'].running:
+            active_traders['grid'].stop()
+            await asyncio.sleep(2)
+
+        active_traders['grid'] = trader
+        save_traders_status()
+        asyncio.create_task(trader.start())
+
         await update.message.reply_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"✅ <b>GRID AUTO STARTED</b>\n\n"
+            f"📊 Pair: <b>{symbol}</b>\n"
+            f"💰 Size: <b>{size}</b>\n"
+            f"📏 Grid: <b>±{offset}%</b>",
+            parse_mode="HTML"
         )
-        
-        # Сохраняем сценарии
-        context.user_data['auto_grid_scenarios'] = scenarios
-        
-        return WAITING_AUTO_TP_SL
-        
+
+        return ConversationHandler.END
+
     except:
-        await update.message.reply_text("❌ Invalid format. Введите число от 0.1 до 5:")
+        await update.message.reply_text("❌ Введите число от 0.1 до 5:")
         return WAITING_AUTO_GRID_OFFSET
+
 
 
 async def auto_grid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1173,9 +1301,7 @@ async def auto_grid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dashboard=dashboard,
             product_id=product_id,
             base_size=size,
-            grid_offset=offset,
-            tp_percent=selected['tp_percent'],
-            sl_percent=selected['sl_percent']
+            grid_offset=offset
         )
         
         # Останавливаем старый трейдер если есть
@@ -1205,7 +1331,7 @@ async def auto_grid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Use /start for проверки статуса"
         )
         
-        keyboard = [[InlineKeyboardButton("« To menu", callback_data='back')]]
+        keyboard = [[InlineKeyboardButton("« Back", callback_data='back')]]
         
         await query.edit_message_text(
             text,
@@ -1263,14 +1389,14 @@ async def auto_ml_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Size: <b>{trader.base_size}</b>\n"
             f"🎯 TP: <b>{trader.tp_percent}%</b>\n"
             f"🛑 SL: <b>{trader.sl_percent}%</b>\n"
-            f"🎲 Мин. уверенность: <b>{trader.min_confidence:.0%}</b>\n\n"
-            "ML модель анализирует:\n"
-            "• Скользящие средние\n"
-            "• RSI индикатор\n"
+            f"🎲 Min. confidence: <b>{trader.min_confidence:.0%}</b>\n\n"
+            "ML model analyzes:\n"
+            "• Moving averages\n"
+            "• RSI indicator\n"
             "• MACD\n"
-            "• Волатильность\n\n"
-            "Открывает позиции только при\n"
-            "высокой уверенности прогноза"
+            "• Volatility\n\n"
+            "Opens positions only with\n"
+            "high prediction confidence"
         )
         
         keyboard = [
@@ -1281,12 +1407,12 @@ async def auto_ml_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             "🧠 <b>ML AUTO-TRADER</b>\n\n"
             "Status: ⚪ <b>OFF</b>\n\n"
-            "Умная торговля на основе ML:\n"
-            "• Прогноз движения цены\n"
-            "• Только направленные сделки\n"
-            "• Opening при уверенности >70%\n"
-            "• Автоматический TP/SL\n\n"
-            "Select pair for запуска:"
+            "Smart trading based on ML:\n"
+            "• Price movement prediction\n"
+            "• Only directional trades\n"
+            "• Opens at confidence >70%\n"
+            "• Automatic TP/SL\n\n"
+            "Select pair to launch:"
         )
         
         keyboard = get_products_keyboard().inline_keyboard
@@ -1599,6 +1725,340 @@ async def tpsl_select_product(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END  # Завершаем conversation
 
 
+# ============ УСТАНОВКА TAKE PROFIT ============
+
+async def set_tp_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню выбора режима установки TP"""
+    query = update.callback_query
+    await query.answer()
+    
+    product_id = int(query.data.split('_')[2])
+    context.user_data['tp_product_id'] = product_id
+    
+    # Получаем информацию о позиции
+    positions = dashboard.get_positions()
+    position = next((p for p in positions if p['product_id'] == product_id), None)
+    
+    if not position:
+        await query.edit_message_text(
+            "❌ Позиция не найдена",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data='positions')
+            ]])
+        )
+        return ConversationHandler.END
+    
+    symbol = position['symbol']
+    current_price = position['price']
+    side = position['side']
+    
+    # Получаем entry price
+    entry_data = dashboard.entry_prices.get(product_id)
+    entry_price = entry_data['entry_price'] if entry_data else current_price
+    
+    text = (
+        f"🎯 <b>УСТАНОВИТЬ TAKE PROFIT</b>\n\n"
+        f"📊 {symbol} {side}\n"
+        f"💰 Вход: ${entry_price:,.2f}\n"
+        f"💰 Сейчас: ${current_price:,.2f}\n\n"
+        f"Выберите режим:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 По цене ($)", callback_data='tp_mode_price')],
+        [InlineKeyboardButton("📊 По проценту (%)", callback_data='tp_mode_percent')],
+        [InlineKeyboardButton("« Назад", callback_data='positions')]
+    ]
+    
+    await query.edit_message_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return WAITING_TP_MODE
+
+
+async def tp_mode_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора режима TP"""
+    query = update.callback_query
+    await query.answer()
+    
+    mode = query.data.split('_')[2]  # 'price' или 'percent'
+    context.user_data['tp_mode'] = mode
+    
+    product_id = context.user_data['tp_product_id']
+    
+    # Получаем позицию
+    positions = dashboard.get_positions()
+    position = next((p for p in positions if p['product_id'] == product_id), None)
+    
+    if not position:
+        await query.edit_message_text("❌ Позиция не найдена")
+        return ConversationHandler.END
+    
+    symbol = position['symbol']
+    current_price = position['price']
+    side = position['side']
+    
+    # Получаем entry price
+    entry_data = dashboard.entry_prices.get(product_id)
+    entry_price = entry_data['entry_price'] if entry_data else current_price
+    
+    if mode == 'price':
+        text = (
+            f"🎯 <b>TP ПО ЦЕНЕ</b>\n\n"
+            f"📊 {symbol} {side}\n"
+            f"💰 Вход: ${entry_price:,.2f}\n"
+            f"💰 Сейчас: ${current_price:,.2f}\n\n"
+            f"Введите цену TP в $:"
+        )
+    else:  # percent
+        # Рассчитываем текущий P&L в процентах
+        if side == 'LONG':
+            current_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+        else:
+            current_pnl_pct = ((entry_price - current_price) / entry_price) * 100
+        
+        text = (
+            f"🎯 <b>TP ПО ПРОЦЕНТУ</b>\n\n"
+            f"📊 {symbol} {side}\n"
+            f"💰 Вход: ${entry_price:,.2f}\n"
+            f"💰 Сейчас: ${current_price:,.2f}\n"
+            f"📈 P&L сейчас: {current_pnl_pct:+.2f}%\n\n"
+            f"Введите процент профита:\n"
+            f"(Например: 5 для +5%)"
+        )
+    
+    await query.edit_message_text(text, parse_mode='HTML')
+    
+    if mode == 'price':
+        return WAITING_TP_PRICE
+    else:
+        return WAITING_TP_PERCENT
+
+
+async def handle_tp_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода TP по цене"""
+    try:
+        tp_price = float(update.message.text)
+        
+        product_id = context.user_data['tp_product_id']
+        
+        # Получаем позицию
+        positions = dashboard.get_positions()
+        position = next((p for p in positions if p['product_id'] == product_id), None)
+        
+        if not position:
+            await update.message.reply_text("❌ Позиция не найдена")
+            return ConversationHandler.END
+        
+        symbol = position['symbol']
+        side = position['side']
+        current_price = position['price']
+        
+        # Получаем entry price
+        entry_data = dashboard.entry_prices.get(product_id)
+        entry_price = entry_data['entry_price'] if entry_data else current_price
+        
+        # Валидация
+        if side == 'LONG' and tp_price <= current_price:
+            await update.message.reply_text(
+                f"❌ Для LONG, TP должен быть > текущей цены (${current_price:,.2f})\n"
+                f"Введите новую цену:"
+            )
+            return WAITING_TP_PRICE
+        
+        if side == 'SHORT' and tp_price >= current_price:
+            await update.message.reply_text(
+                f"❌ Для SHORT, TP должен быть < текущей цены (${current_price:,.2f})\n"
+                f"Введите новую цену:"
+            )
+            return WAITING_TP_PRICE
+        
+        # Рассчитываем P&L
+        size = abs(position['amount'])
+        if side == 'LONG':
+            tp_pnl = (tp_price - entry_price) * size
+            tp_percent = ((tp_price - entry_price) / entry_price) * 100
+        else:
+            tp_pnl = (entry_price - tp_price) * size
+            tp_percent = ((entry_price - tp_price) / entry_price) * 100
+        
+        # Подтверждение
+        confirm_text = (
+            f"🎯 <b>ПОДТВЕРЖДЕНИЕ TP</b>\n\n"
+            f"📊 {symbol} {side}\n"
+            f"💰 Вход: ${entry_price:,.2f}\n"
+            f"💰 Сейчас: ${current_price:,.2f}\n"
+            f"🎯 TP: ${tp_price:,.2f}\n\n"
+            f"Ожидаемый профит:\n"
+            f"📈 {tp_percent:+.2f}%\n"
+            f"💵 ${tp_pnl:+,.2f}\n\n"
+            f"Установить TP?"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Да", callback_data=f'confirm_tp_{tp_price}'),
+                InlineKeyboardButton("❌ Нет", callback_data='positions')
+            ]
+        ]
+        
+        await update.message.reply_text(
+            confirm_text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        context.user_data['tp_price'] = tp_price
+        
+        return ConversationHandler.END
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат. Введите цену:")
+        return WAITING_TP_PRICE
+
+
+async def handle_tp_percent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода TP по проценту"""
+    try:
+        tp_percent = float(update.message.text)
+        
+        if tp_percent <= 0:
+            await update.message.reply_text("❌ Процент должен быть > 0\nВведите процент:")
+            return WAITING_TP_PERCENT
+        
+        product_id = context.user_data['tp_product_id']
+        
+        # Получаем позицию
+        positions = dashboard.get_positions()
+        position = next((p for p in positions if p['product_id'] == product_id), None)
+        
+        if not position:
+            await update.message.reply_text("❌ Позиция не найдена")
+            return ConversationHandler.END
+        
+        symbol = position['symbol']
+        side = position['side']
+        current_price = position['price']
+        
+        # Получаем entry price
+        entry_data = dashboard.entry_prices.get(product_id)
+        entry_price = entry_data['entry_price'] if entry_data else current_price
+        
+        # Рассчитываем TP цену
+        if side == 'LONG':
+            tp_price = entry_price * (1 + tp_percent / 100)
+        else:
+            tp_price = entry_price * (1 - tp_percent / 100)
+        
+        # Рассчитываем P&L
+        size = abs(position['amount'])
+        tp_pnl = (tp_price - entry_price) * size if side == 'LONG' else (entry_price - tp_price) * size
+        
+        # Подтверждение
+        confirm_text = (
+            f"🎯 <b>ПОДТВЕРЖДЕНИЕ TP</b>\n\n"
+            f"📊 {symbol} {side}\n"
+            f"💰 Вход: ${entry_price:,.2f}\n"
+            f"💰 Сейчас: ${current_price:,.2f}\n"
+            f"🎯 TP: ${tp_price:,.2f}\n\n"
+            f"Ожидаемый профит:\n"
+            f"📈 +{tp_percent:.2f}%\n"
+            f"💵 ${tp_pnl:+,.2f}\n\n"
+            f"Установить TP?"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Да", callback_data=f'confirm_tp_{tp_price}'),
+                InlineKeyboardButton("❌ Нет", callback_data='positions')
+            ]
+        ]
+        
+        await update.message.reply_text(
+            confirm_text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        context.user_data['tp_price'] = tp_price
+        
+        return ConversationHandler.END
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат. Введите процент:")
+        return WAITING_TP_PERCENT
+
+
+async def confirm_tp_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение и размещение TP ордера"""
+    query = update.callback_query
+    await query.answer()
+    
+    tp_price = float(query.data.split('_')[2])
+    product_id = context.user_data['tp_product_id']
+    
+    # Получаем позицию
+    positions = dashboard.get_positions()
+    position = next((p for p in positions if p['product_id'] == product_id), None)
+    
+    if not position:
+        await query.edit_message_text(
+            "❌ Позиция не найдена",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data='positions')
+            ]])
+        )
+        return
+    
+    symbol = position['symbol']
+    side = position['side']
+    size = abs(position['amount'])
+    is_long = side == 'LONG'
+    
+    await query.edit_message_text(f"🔄 Устанавливаю TP для {symbol}...")
+    
+    # Размещаем TP ордер
+    result = dashboard.place_tp_order(
+        product_id=product_id,
+        size=float(size),  # ПОЛНЫЙ размер позиции (уже с плечом)
+        is_long=is_long,
+        target_price=tp_price
+    )
+    
+    if result:
+        # Обновляем сохраненные данные
+        entry_data = dashboard.entry_prices.get(str(product_id))
+        if entry_data:
+            dashboard.save_entry_price(
+                product_id,
+                entry_data['entry_price'],
+                size,
+                tp_price=tp_price,
+                sl_price=entry_data.get('sl_price')
+            )
+        
+        await query.edit_message_text(
+            f"✅ <b>TP УСТАНОВЛЕН!</b>\n\n"
+            f"📊 {symbol} {side}\n"
+            f"🎯 TP: ${tp_price:,.2f}\n\n"
+            f"Позиция закроется автоматически при достижении цены",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« К позициям", callback_data='positions')
+            ]])
+        )
+    else:
+        await query.edit_message_text(
+            f"❌ Ошибка установки TP для {symbol}",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data='positions')
+            ]])
+        )
+
+
 def main():
     """Start bot"""
     # Get token
@@ -1606,6 +2066,16 @@ def main():
     
     # Create application
     application = Application.builder().token(bot_token).build()
+    
+    # Subaccount registration handler
+    subaccount_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            WAITING_SUBACCOUNT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subaccount_input)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+        per_message=False
+    )
     
     # Position opening handler
     open_position_handler = ConversationHandler(
@@ -1704,8 +2174,31 @@ def main():
         per_message=False
     )
     
+    # TP Setup Handler  
+    tp_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(set_tp_menu, pattern=r'^set_tp_\d+$')
+        ],
+        states={
+            WAITING_TP_MODE: [
+                CallbackQueryHandler(tp_mode_selected, pattern=r'^tp_mode_(price|percent)$')
+            ],
+            WAITING_TP_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tp_price)
+            ],
+            WAITING_TP_PERCENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tp_percent)
+            ]
+        },
+        fallbacks=[
+            CommandHandler('cancel', cancel),
+            CallbackQueryHandler(show_positions, pattern='^positions$')
+        ],
+        per_message=False
+    )
+    
     # Commands
-    application.add_handler(CommandHandler("start", start))
+    application.add_handler(subaccount_handler)
     
     # ConversationHandlers
     application.add_handler(open_position_handler)
@@ -1714,6 +2207,7 @@ def main():
     application.add_handler(auto_grid_handler)
     application.add_handler(auto_ml_handler)
     application.add_handler(tpsl_handler)
+    application.add_handler(tp_handler)
     
     # Callback handlers
     application.add_handler(CallbackQueryHandler(start, pattern='^back$'))
@@ -1722,8 +2216,25 @@ def main():
     application.add_handler(CallbackQueryHandler(show_prices, pattern='^prices$'))
     application.add_handler(CallbackQueryHandler(show_positions, pattern='^positions$'))
     application.add_handler(CallbackQueryHandler(show_history, pattern='^history$'))
+    
+    # История - периоды
+    async def history_period_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        period = update.callback_query.data.split('_')[2]
+        await show_period_summary(update, context, history_manager, period)
+    application.add_handler(CallbackQueryHandler(history_period_handler, pattern=r'^hist_period_'))
+    
+    # История - детали
+    async def history_details_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        parts = update.callback_query.data.split('_')
+        period = parts[2]
+        page = int(parts[3]) if len(parts) > 3 else 0
+        await show_period_details(update, context, history_manager, period, page)
+    application.add_handler(CallbackQueryHandler(history_details_handler, pattern=r'^hist_details_'))
+    
     application.add_handler(CallbackQueryHandler(confirm_order, pattern='^confirm_order_'))
     application.add_handler(CallbackQueryHandler(close_position, pattern=r'^close_\d+$'))
+    application.add_handler(CallbackQueryHandler(cancel_orders_for_product, pattern=r'^cancel_orders_\d+$'))
+    application.add_handler(CallbackQueryHandler(confirm_tp_order, pattern=r'^confirm_tp_'))
     application.add_handler(CallbackQueryHandler(confirm_grid, pattern='^confirm_grid$'))
     application.add_handler(CallbackQueryHandler(grid_mode_selected, pattern=r'^grid_mode_(adaptive|standard)_\d+$'))
     application.add_handler(CallbackQueryHandler(stop_grid_trader, pattern='^stop_grid$'))
@@ -1732,6 +2243,57 @@ def main():
     # Launch
     logger.info("🤖 Bot started!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+async def handle_subaccount_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода Subaccount ID"""
+    user_id = update.effective_user.id
+    subaccount_id = update.message.text.strip()
+    
+    # Валидация формата
+    if not subaccount_id.startswith('0x') or len(subaccount_id) != 66:
+        await update.message.reply_text(
+            "❌ Неверный формат Subaccount ID!\n\n"
+            "Subaccount ID должен:\n"
+            "• Начинаться с 0x\n"
+            "• Иметь длину 66 символов\n\n"
+            "Пример: 0x45e293d6f82b6f94f8657a15dab479dcbe034b3964656661756c740000000000\n\n"
+            "Введите корректный Subaccount ID:"
+        )
+        return WAITING_SUBACCOUNT_ID
+    
+    # Сохраняем
+    set_user_subaccount(user_id, subaccount_id)
+    
+    # Создаём dashboard
+    global dashboard, calc
+    
+    try:
+        logger.info(f"🔗 Creating dashboard for new user {user_id}")
+        dashboard = TradingDashboard(subaccount_id)
+        
+        if calc is None:
+            calc = TPSLCalculator(leverage=dashboard.leverage)
+        
+        await update.message.reply_text(
+            f"✅ Регистрация успешна!\n\n"
+            f"👛 Ваш Subaccount:\n<code>{subaccount_id}</code>\n\n"
+            f"🌐 Network: {dashboard.network.upper()}\n"
+            f"⚡ Leverage: {dashboard.leverage}x\n\n"
+            f"Теперь вы можете начать торговать!",
+            parse_mode='HTML',
+            reply_markup=get_main_keyboard()
+        )
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания dashboard: {e}")
+        await update.message.reply_text(
+            f"❌ Ошибка инициализации:\n{e}\n\n"
+            "Проверьте правильность Subaccount ID и попробуйте снова:"
+        )
+        return WAITING_SUBACCOUNT_ID
 
 
 if __name__ == '__main__':

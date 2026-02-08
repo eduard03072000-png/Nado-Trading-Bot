@@ -30,32 +30,28 @@ PRODUCTS = {
     2: "BTC-PERP",
     4: "ETH-PERP",
     8: "SOL-PERP",
-    9: "SOLUSDT0",  # SOL USDT perp
-    10: "INK-PERP",
+    20: "INK-PERP",
 }
 
 SIZE_INCREMENTS = {
     2: Decimal("0.001"),  # BTC
     4: Decimal("0.01"),   # ETH
     8: Decimal("0.1"),    # SOL
-    9: Decimal("0.1"),    # SOLUSDT0
-    10: Decimal("1"),     # INK
+    20: Decimal("1"),     # INK
 }
 
 PRICE_INCREMENTS = {
     2: Decimal("0.001"),  # BTC: $0.001
     4: Decimal("0.01"),   # ETH: $0.01
     8: Decimal("0.01"),   # SOL: $0.01
-    9: Decimal("0.01"),   # SOLUSDT0: $0.01
-    10: Decimal("0.0001"), # INK: $0.0001
+    20: Decimal("0.0001"), # INK: $0.0001
 }
 
 PRICE_INCREMENTS_X18 = {
     2: 1000000000000000,      # BTC: 0.001
     4: 10000000000000000,     # ETH: 0.01
     8: 10000000000000000,     # SOL: 0.01
-    9: 10000000000000000,     # SOLUSDT0: 0.01
-    10: 10000000000000000,    # INK: 0.01
+    20: 10000000000000000,    # INK: 0.01
 }
 
 class TradingDashboard:
@@ -141,7 +137,7 @@ class TradingDashboard:
             self.save_positions_data()
     
     def calculate_pnl(self, product_id, current_price, amount):
-        """Рассчитать P&L для позиции (как на DEX с funding)"""
+        """Рассчитать P&L для позиции (правильный расчёт как на DEX)"""
         if product_id not in self.entry_prices:
             return None
         
@@ -150,79 +146,28 @@ class TradingDashboard:
         current_price = Decimal(str(current_price))
         amount = Decimal(str(amount))
         
-        # Базовый P&L
+        # Правильный P&L расчёт
         if amount > 0:  # LONG
-            pnl_base = (current_price - entry_price) * abs(amount)
+            pnl = (current_price - entry_price) * abs(amount)
         else:  # SHORT
-            pnl_base = (entry_price - current_price) * abs(amount)
+            pnl = (entry_price - current_price) * abs(amount)
         
-        # DEX вычитает ~50% от базового P&L как funding/fees
-        pnl_adjusted = pnl_base * Decimal("0.5")
-        
-        return float(pnl_adjusted)
+        return float(pnl)
     
     def place_tp_order(self, product_id, size, is_long, target_price):
-        """Разместить TP ордер через price trigger"""
+        """Разместить TP ордер (обычный лимитный с reduce_only)"""
         try:
-            size = Decimal(size)
-            size = self.normalize_size(product_id, size)
+            print(f"   📊 TP ордер: {size:.2f} @ ${target_price:.2f}")
             
-            # amount_x18 для ЗАКРЫТИЯ позиции (обратное направление)
-            amount_x18 = int((size * Decimal(10) ** 18).to_integral_value())
-            
-            if is_long:
-                # Закрываем LONG = продаем (отрицательный amount)
-                amount_x18 = -amount_x18
-            else:
-                # Закрываем SHORT = покупаем (положительный amount)
-                amount_x18 = amount_x18
-            
-            # Проверка кратности шагу
-            step_x18 = int(SIZE_INCREMENTS[product_id] * Decimal(10) ** 18)
-            if amount_x18 % step_x18 != 0:
-                raise ValueError(f"amount_x18 {amount_x18} не кратен шагу {step_x18}")
-            
-            # Округляем цену
-            price_decimal = Decimal(str(target_price))
-            price_decimal = self.normalize_price(product_id, price_decimal)
-            
-            # Конвертируем в priceX18
-            priceX18 = int((price_decimal * Decimal(10) ** 18).to_integral_value())
-            
-            # Проверка кратности шагу цены
-            price_step_x18 = int(PRICE_INCREMENTS_X18[product_id])
-            if priceX18 % price_step_x18 != 0:
-                raise ValueError(f"priceX18 {priceX18} не кратен шагу {price_step_x18}")
-            
-            # Размещаем триггерный ордер
-            # Для TP:
-            # - LONG позиция → закрываем продажей → триггер "last_price_above"
-            # - SHORT позиция → закрываем покупкой → триггер "last_price_below"
-            from nado_protocol.utils.expiration import OrderType
-            
-            # Определяем тип триггера для TP
-            if is_long:
-                # LONG: закрываем продажей выше текущей цены
-                trigger_type = "last_price_above"
-            else:
-                # SHORT: закрываем покупкой ниже текущей цены
-                trigger_type = "last_price_below"
-            
-            result = self.client.market.place_price_trigger_order(
+            # Используем place_limit_close_order для TP
+            result = self.place_limit_close_order(
                 product_id=product_id,
-                price_x18=str(priceX18),
-                amount_x18=str(amount_x18),
-                trigger_price_x18=str(priceX18),  # Триггер и цена исполнения совпадают
-                trigger_type=trigger_type,
-                reduce_only=True,  # Только закрытие
-                order_type=OrderType.POST_ONLY  # Maker для низких комиссий
+                size=size,
+                is_long=is_long,
+                target_price=target_price
             )
             
-            if result.status.value == "success":
-                return result
-            else:
-                print(f"   ❌ Ошибка: {result.error}")
-                return None
+            return result
                 
         except Exception as e:
             print(f"   ❌ Ошибка размещения TP ордера: {e}")
@@ -325,9 +270,9 @@ class TradingDashboard:
             
             target_price_decimal = Decimal(str(target_price))
             
-            # Создаем лимитный ордер с reduce_only
+            # Создаем ордер для закрытия (IOC - immediate or cancel)
             appendix = build_appendix(
-                order_type=OrderType.POST_ONLY,  # Лимитный
+                order_type=OrderType.DEFAULT,  # IOC для немедленного исполнения
                 isolated=False,
                 reduce_only=True  # ВАЖНО: только для закрытия позиции
             )
@@ -381,7 +326,10 @@ class TradingDashboard:
         
         return float(pnl)	
 
-    def __init__(self, user_subaccount_id=None):
+    def __init__(self, user_subaccount_id):
+        """
+        user_subaccount_id: ОБЯЗАТЕЛЬНЫЙ subaccount ID пользователя с NADO DEX
+        """
         network = config.get_network()
         mode = NadoClientMode.MAINNET if network == "mainnet" else NadoClientMode.TESTNET
         
@@ -389,27 +337,19 @@ class TradingDashboard:
         self.client = create_nado_client(mode=mode, signer=config.get_nado_key())
         self.bot_wallet = self.client.context.signer.address
         
-        # Если передан user_subaccount_id - используем его
-        # Иначе используем subaccount бота (по умолчанию)
-        if user_subaccount_id:
-            self.sender_hex = user_subaccount_id
-            # Извлекаем адрес владельца из subaccount_id (первые 40 символов после 0x)
-            self.wallet = '0x' + user_subaccount_id[2:42]
-            print(f"📋 Using subaccount: {self.wallet[:10]}...{self.wallet[-8:]}")
-            print(f"📋 Full subaccount ID: {user_subaccount_id}")
-        else:
-            # Используем subaccount бота по умолчанию
-            self.wallet = self.bot_wallet
-            params = SubaccountParams(
-                subaccount_owner=self.wallet,
-                subaccount_name="default"
-            )
-            self.sender_hex = subaccount_to_hex(params)
-            print(f"📋 Using bot's own subaccount: {self.sender_hex}")
+        # Используем subaccount пользователя
+        self.user_subaccount = user_subaccount_id
+        self.sender_hex = user_subaccount_id
+        
+        # Извлекаем адрес владельца из subaccount_id (первые 40 символов после 0x)
+        self.wallet = '0x' + user_subaccount_id[2:42]
+        
+        print(f"Bot: {self.bot_wallet}")
+        print(f"User subaccount: {self.user_subaccount}")
         
         # Настройки
-        self.leverage = Decimal("10")  # Плечо по умолчанию 10x
-        self.margin_mode = "AUTO"  # Автоматическое управление маржой биржей
+        self.leverage = Decimal("10")
+        self.margin_mode = "AUTO"
         
         # Хранилище для entry prices
         self.positions_file = os.path.join(os.path.dirname(__file__), "positions_data.json")
@@ -673,6 +613,21 @@ class TradingDashboard:
                 print(f"   Entry price saved: ${price:,.2f}")
                 print(f"   TP price: ${float(tp_price_calc):,.2f}")
                 
+                # Если auto_tp=True, размещаем TP ордер на бирже
+                if auto_tp:
+                    print(f"\n📊 Размещаем TP ордер на бирже...")
+                    # ВАЖНО: TP ордер размещаем на БАЗОВЫЙ размер (без плеча)
+                    tp_result = self.place_tp_order(
+                        product_id=product_id,
+                        size=size,  # БЕЗ плеча!
+                        is_long=is_long,
+                        target_price=float(tp_price_calc)
+                    )
+                    if tp_result:
+                        print(f"   ✅ TP ордер размещен @ ${float(tp_price_calc):,.2f}")
+                    else:
+                        print(f"   ⚠️ TP ордер не удалось разместить")
+                
             return result
             
         except Exception as e:
@@ -682,8 +637,12 @@ class TradingDashboard:
             return None
     
     def close_position(self, product_id, amount=None):
-        """Закрыть позицию лимитным ордером"""
+        """Закрыть позицию РЫНОЧНЫМ ордером"""
         try:
+            from nado_protocol.engine_client.types.execute import PlaceMarketOrderParams
+            from nado_protocol.utils.execute import MarketOrderParams
+            import time
+            
             # Получаем текущую позицию
             positions = self.get_positions()
             current_pos = next((p for p in positions if p['product_id'] == product_id), None)
@@ -695,74 +654,119 @@ class TradingDashboard:
             # Определяем направление и размер
             is_long = current_pos['amount'] > 0
             position_size = abs(current_pos['amount'])
-            current_price = current_pos['price']
             
-            if not current_price:
-                print(f"   ❌ Не удалось получить текущую цену")
-                return None
+            print(f"   Закрытие позиции MARKET ордером...")
+            print(f"   Размер: {position_size:.4f}")
             
-            print(f"   Закрытие позиции лимитным ордером...")
-            print(f"   Текущая цена: ${current_price:,.2f}")
+            # Нормализуем размер
+            size_decimal = Decimal(str(position_size))
+            size_decimal = self.normalize_size(product_id, size_decimal)
             
-            # Размещаем лимитный ордер на закрытие по текущей цене
-            result = self.place_limit_close_order(
-                product_id=product_id,
-                size=position_size,
-                is_long=is_long,
-                target_price=current_price
+            # Конвертируем в amount_x18
+            amount_x18 = int((size_decimal * Decimal(10**18)).to_integral_value())
+            
+            # Для закрытия LONG нужен отрицательный amount (продажа)
+            # Для закрытия SHORT нужен положительный amount (покупка)
+            if is_long:
+                amount_x18 = -amount_x18
+            
+            print(f"   amount_x18: {amount_x18}")
+            
+            # Создаем market order с reduce_only
+            order = MarketOrderParams(
+                sender=self.sender_hex,
+                amount=amount_x18,
+                reduce_only=True  # ВАЖНО: только закрытие
             )
             
-            if result and hasattr(result, 'status'):
-                print(f"   Статус: {result.status}")
-                print(f"   ✅ Лимитный ордер на закрытие размещен")
-                
-                # Даем время на исполнение
-                import time
-                print(f"   ⏳ Ожидание исполнения ордера...")
-                time.sleep(5)
-                
-                # Проверяем закрылась ли позиция
-                print(f"   🔍 Проверка статуса позиции...")
-                positions = self.get_positions()
-                position_exists = any(p['product_id'] == product_id for p in positions)
-                
-                if not position_exists:
-                    # Рассчитываем realized P&L
-                    pnl_value = None
-                    if current_pos and current_price:
-                        pnl_value = self.calculate_pnl(product_id, current_price, current_pos['amount'])
-                        if pnl_value is not None:
-                            pnl_emoji = "🟢" if pnl_value >= 0 else "🔴"
-                            print(f"\n   {pnl_emoji} REALIZED P&L: ${pnl_value:+,.2f}")
-                            
-                            # Сохраняем в историю
-                            if product_id in self.entry_prices:
-                                entry_data = self.entry_prices[product_id]
-                                self.add_trade_to_history(
-                                    product_id=product_id,
-                                    symbol=current_pos['symbol'],
-                                    side=current_pos['side'],
-                                    size=abs(current_pos['amount']),
-                                    entry_price=entry_data['entry_price'],
-                                    exit_price=current_price,
-                                    pnl=pnl_value
-                                )
-                    
-                    print(f"   ✅ Позиция успешно закрыта!")
-                    
-                    # Удаляем entry price
-                    self.remove_entry_price(product_id)
-                    return result
-                else:
-                    print(f"   ⏳ Ордер размещен, ожидает исполнения")
-                    print(f"   Позиция закроется когда цена достигнет ${current_price:,.2f}")
-                    return result
+            params = PlaceMarketOrderParams(
+                product_id=product_id,
+                market_order=order  # Правильное поле: market_order
+            )
+            
+            # Размещаем
+            result = self.client.market.place_market_order(params)
+            
+            if result:
+                print(f"   ✅ Market order исполнен")
+                # Удаляем entry price
+                if str(product_id) in self.entry_prices:
+                    del self.entry_prices[str(product_id)]
+                    self.save_positions_data()
+                return result
             else:
-                print(f"   ❌ Ошибка размещения ордера")
+                print(f"   ❌ Ошибка исполнения market order")
                 return None
+                
+        except Exception as e:
+            print(f"❌ Ошибка закрытия позиции: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def place_limit_close_order(self, product_id, size, is_long, target_price):
+        """Разместить лимитный ордер на закрытие позиции (для TP/SL)"""
+        try:
+            from nado_protocol.engine_client.types.execute import PlaceOrderParams
+            from nado_protocol.utils.execute import OrderParams
+            from nado_protocol.utils.order import build_appendix, OrderType
+            import time
+            
+            # Нормализуем размер
+            size = self.normalize_size(product_id, Decimal(str(size)))
+            
+            # Размер позиции (без плеча для закрытия)
+            amount_x18 = int((size * Decimal(10) ** 18).to_integral_value())
+            
+            # Для закрытия LONG нужен SHORT ордер (отрицательный amount)
+            # Для закрытия SHORT нужен LONG ордер (положительный amount)
+            if is_long:
+                amount_x18 = -amount_x18  # Продаем для закрытия LONG
+            # else: amount_x18 остается положительным для закрытия SHORT
+            
+            step_x18 = int(SIZE_INCREMENTS[product_id] * Decimal(10) ** 18)
+            if amount_x18 % step_x18 != 0:
+                raise ValueError(f"amount_x18 {amount_x18} не кратен шагу {step_x18}")
+            
+            target_price_decimal = Decimal(str(target_price))
+            
+            # Создаем ордер для закрытия (IOC - immediate or cancel)
+            appendix = build_appendix(
+                order_type=OrderType.DEFAULT,  # IOC для немедленного исполнения
+                isolated=False,
+                reduce_only=True  # ВАЖНО: только для закрытия позиции
+            )
+            
+            # Рассчитываем price_x18
+            price_x18_raw = int((target_price_decimal * Decimal(10**18)).to_integral_value())
+            price_increment = PRICE_INCREMENTS_X18[product_id]
+            price_x18 = (price_x18_raw // price_increment) * price_increment
+            
+            # Expiration: 7 дней (take-profit может висеть долго)
+            expiration = int(time.time()) + (7 * 24 * 60 * 60)
+            
+            # Создаем OrderParams
+            order = OrderParams(
+                sender=self.sender_hex,
+                amount=amount_x18,
+                priceX18=price_x18,
+                expiration=expiration,
+                appendix=appendix
+            )
+            
+            # Создаем PlaceOrderParams
+            params = PlaceOrderParams(
+                product_id=product_id,
+                order=order
+            )
+            
+            # Размещаем ордер
+            result = self.client.market.place_order(params)
+            
+            return result
             
         except Exception as e:
-            print(f"   ❌ Ошибка закрытия позиции: {e}")
+            print(f"❌ Ошибка размещения лимитного ордера на закрытие: {e}")
             import traceback
             traceback.print_exc()
             return None

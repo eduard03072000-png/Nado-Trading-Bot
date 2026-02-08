@@ -1,0 +1,56 @@
+# ═══════════════════════════════════════════════════════════════════
+# ФИНАЛЬНЫЕ ПРАВКИ ДЛЯ telegram_trading_bot.py
+# Скопируйте эти 3 блока кода в соответствующие места
+# ═══════════════════════════════════════════════════════════════════
+
+# ───────────────────────────────────────────────────────────────────
+# БЛОК 1: Добавить после tpsl_handler (строка ~1669)
+# Найдите: tpsl_handler = ConversationHandler(...) 
+# Вставьте ПОСЛЕ НЕГО:
+# ───────────────────────────────────────────────────────────────────
+
+    # TP Setup Handler  
+    tp_handler = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(set_tp_menu, pattern=r'^set_tp_\d+$')
+        ],
+        states={
+            WAITING_TP_MODE: [
+                CallbackQueryHandler(tp_mode_selected, pattern=r'^tp_mode_(price|percent)$')
+            ],
+            WAITING_TP_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tp_price)
+            ],
+            WAITING_TP_PERCENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tp_percent)
+            ]
+        },
+        fallbacks=[
+            CommandHandler('cancel', cancel),
+            CallbackQueryHandler(show_positions, pattern='^positions$')
+        ],
+        per_message=False
+    )
+
+
+# ───────────────────────────────────────────────────────────────────
+# БЛОК 2: Добавить в список handlers (строка ~1698)
+# Найдите: application.add_handler(tpsl_handler)
+# Добавьте ПОСЛЕ НЕГО:
+# ───────────────────────────────────────────────────────────────────
+
+    application.add_handler(tp_handler)
+
+
+# ───────────────────────────────────────────────────────────────────
+# БЛОК 3: Добавить в callback handlers (строка ~1714)
+# Найдите: application.add_handler(CallbackQueryHandler(close_position, pattern=r'^close_\d+$'))
+# Добавьте ПОСЛЕ НЕГО:
+# ───────────────────────────────────────────────────────────────────
+
+    application.add_handler(CallbackQueryHandler(confirm_tp_order, pattern=r'^confirm_tp_'))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ВСЁ! Это все изменения которые нужно добавить
+# ═══════════════════════════════════════════════════════════════════

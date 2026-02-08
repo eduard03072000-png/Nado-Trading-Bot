@@ -42,8 +42,24 @@ def get_env_variable(name: str, default: str = None, required: bool = True) -> s
 # ═══════════════════════════════════════════════════════
 
 def get_nado_key() -> str:
-    """Получить приватный ключ для Nado"""
-    key = get_env_variable("NADO_PRIVATE_KEY")
+    """Получить приватный ключ для Nado
+    
+    ПРИОРИТЕТ: BOT_PRIVATE_KEY (Linked Signer)
+    Fallback: NADO_PRIVATE_KEY (только для setup_linked_signer.py)
+    """
+    # ПРИОРИТЕТ: BOT_PRIVATE_KEY (бот как Linked Signer)
+    key = get_env_variable("BOT_PRIVATE_KEY", required=False)
+    
+    # Fallback: NADO_PRIVATE_KEY (только для setup)
+    if not key:
+        key = get_env_variable("NADO_PRIVATE_KEY", required=False)
+    
+    if not key:
+        raise ValueError(
+            "❌ Не найден BOT_PRIVATE_KEY в .env файле!\n"
+            "   BOT_PRIVATE_KEY должен быть установлен как Linked Signer.\n"
+            "   Запустите: python setup_linked_signer.py"
+        )
     
     # Добавить 0x если отсутствует
     if not key.startswith("0x"):
@@ -55,6 +71,11 @@ def get_nado_key() -> str:
 def get_wallet_address() -> str:
     """Получить адрес кошелька"""
     return get_env_variable("NADO_WALLET_ADDRESS", required=False)
+
+
+def get_subaccount_id() -> str:
+    """Получить subaccount ID (для работы без приватного ключа)"""
+    return get_env_variable("NADO_SUBACCOUNT_ID", required=False)
 
 
 # ═══════════════════════════════════════════════════════

@@ -13,6 +13,7 @@ class TPSLCalculator:
     MODERATE = {"tp": 1.0, "sl": 0.5}          # Умеренный  
     AGGRESSIVE = {"tp": 2.0, "sl": 1.0}        # Агрессивный
     SCALPING = {"tp": 0.3, "sl": 0.15}         # Скальпинг
+    TEST = {"tp": 5.0, "sl": 3.0}              # ТЕСТ - большие %
     
     def __init__(self, leverage: int = 10, maker_fee: Decimal = Decimal("0.0001")):
         self.leverage = leverage
@@ -34,6 +35,7 @@ class TPSLCalculator:
         scenarios = []
         
         presets = [
+            ("🧪 ТЕСТ (TP:5% SL:3%)", self.TEST),
             ("Скальпинг 🏃", self.SCALPING),
             ("Консервативный 🛡️", self.CONSERVATIVE),
             ("Умеренный ⚖️", self.MODERATE),

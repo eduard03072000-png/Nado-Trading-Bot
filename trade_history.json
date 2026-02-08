@@ -9,5 +9,82 @@
     "exit_price": 88.245,
     "pnl": 0.2,
     "pnl_percent": 0.011330802787377487
+  },
+  {
+    "timestamp": "2026-02-07 13:47:17",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "LONG",
+    "size": 10.0,
+    "entry_price": 87.26919,
+    "exit_price": 87.765,
+    "pnl": 2.47905,
+    "pnl_percent": 0.28406932618487696
+  },
+  {
+    "timestamp": "2026-02-08 14:40:53",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "LONG",
+    "size": 2.0,
+    "entry_price": 87.192105,
+    "exit_price": 87.085,
+    "pnl": -0.107105,
+    "pnl_percent": -0.06141897824350037
+  },
+  {
+    "timestamp": "2026-02-08 16:46:05",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "LONG",
+    "size": 2.0,
+    "entry_price": 87.162075,
+    "exit_price": 87.185,
+    "pnl": 0.022925,
+    "pnl_percent": 0.013150788344586795
+  },
+  {
+    "timestamp": "2026-02-08 16:55:28",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "LONG",
+    "size": 2.0,
+    "entry_price": 87.092005,
+    "exit_price": 87.105,
+    "pnl": 0.012995,
+    "pnl_percent": 0.007460501110291352
+  },
+  {
+    "timestamp": "2026-02-08 17:12:14",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "LONG",
+    "size": 2.0,
+    "entry_price": 86.921835,
+    "exit_price": 86.965,
+    "pnl": 0.043165,
+    "pnl_percent": 0.024829779536982857
+  },
+  {
+    "timestamp": "2026-02-08 17:25:22",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "LONG",
+    "size": 2.0,
+    "entry_price": 86.801715,
+    "exit_price": 86.825,
+    "pnl": 0.023285,
+    "pnl_percent": 0.013412753423132251
+  },
+  {
+    "timestamp": "2026-02-08 18:28:26",
+    "product_id": 8,
+    "symbol": "SOL-PERP",
+    "side": "SHORT",
+    "size": 4.0,
+    "entry_price": 86.848065,
+    "exit_price": 87.955,
+    "pnl": -2.21387,
+    "pnl_percent": -0.6372824771628476
   }
 ]
