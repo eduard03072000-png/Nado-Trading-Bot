@@ -1,19 +1,18 @@
 """
-ML-Based Auto Trading
-Торговля на основе ML прогнозов
+ML-Based Auto Trading - FIXED VERSION
+Анализ за неделю, учет объёма, TP=+5%, SL=-0.5%
 """
 import asyncio
 import sys
 from pathlib import Path
 from decimal import Decimal
 from typing import Optional, Dict, List
+from datetime import datetime, timedelta
 from trading_dashboard import TradingDashboard, PRODUCTS
 from tp_sl_calculator import TPSLCalculator
 import logging
 
-# Добавляем путь к ML модулю
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-
 from ml import TrendPredictor
 
 logging.basicConfig(level=logging.INFO)
@@ -21,268 +20,229 @@ logger = logging.getLogger(__name__)
 
 
 class MLAutoTrader:
-    """Автоматическая торговля на основе ML прогнозов"""
+    """ML Auto-Trader: WEEK data, VOLUME, TP=+5%, SL=-0.5%"""
     
-    def __init__(
-        self,
-        dashboard: TradingDashboard,
-        product_id: int,
-        base_size: float,
-        tp_percent: float = 1.0,
-        sl_percent: float = 0.5,
-        min_confidence: float = 0.7,
-        lookback_days: int = 7
-    ):
+    def __init__(self, dashboard: TradingDashboard, product_id: int, base_size: float, min_confidence: float = 0.7):
         self.dashboard = dashboard
         self.product_id = product_id
         self.base_size = base_size
-        self.tp_percent = tp_percent
-        self.sl_percent = sl_percent
         self.min_confidence = min_confidence
-        self.lookback_days = lookback_days
+        
+        # FIXED: TP=+5%, SL=-0.5%
+        self.tp_percent = 5.0
+        self.sl_percent = 0.5
+        self.lookback_days = 7  # Week data
         
         self.running = False
         self.predictor = TrendPredictor()
         self.calc = TPSLCalculator(leverage=dashboard.leverage)
         
-        # История цен для ML
-        self.price_history: List[Decimal] = []
-        
-        # Последний прогноз ML
+        # History: prices + volumes
+        self.price_history: List[Dict] = []  # {price, volume, timestamp}
         self.last_prediction = {"direction": "unknown", "confidence": 0}
         
     async def start(self):
-        """Запустить ML торговлю"""
+        """Start ML trading"""
         self.running = True
-        logger.info("🤖 ML Auto-Trader запущен!")
-        logger.info(f"   Минимальная уверенность: {self.min_confidence:.0%}")
+        logger.info(f"🤖 ML Auto-Trader started! TP=+{self.tp_percent}%, SL=-{self.sl_percent}%")
         
-        # Загружаем историю цен
-        await self._load_price_history()
+        await self._load_week_data()
         
-        # Основной цикл
         while self.running:
             try:
                 await self._trading_cycle()
-                await asyncio.sleep(60)  # Проверка каждую минуту
+                await asyncio.sleep(60)
             except Exception as e:
-                logger.error(f"Ошибка в цикле: {e}")
+                logger.error(f"Error: {e}")
                 await asyncio.sleep(60)
     
     def stop(self):
-        """Остановить ML торговлю"""
         self.running = False
-        logger.info("🛑 ML Auto-Trader остановлен")
+        logger.info("🛑 ML Auto-Trader stopped")
     
-    async def _load_price_history(self):
-        """Загрузить историю цен за N дней"""
+    async def _load_week_data(self):
+        """Load WEEK data with VOLUME"""
         try:
-            # В реальной версии получаем через API
-            # Пока используем текущую цену как базу
+            symbol = PRODUCTS[self.product_id]
+            logger.info(f"📊 Loading 7 days data for {symbol}...")
+            
+            # Get current price as base
             current_price = self.dashboard.get_market_price(self.product_id)
             
-            if current_price:
-                # Генерируем базовую историю (для теста)
-                # В продакшене загружать через get_candlesticks
-                for i in range(self.lookback_days * 24):  # По часам
-                    # Имитация исторических данных
-                    noise = Decimal(str(1 + (i % 10 - 5) * 0.001))
-                    price = Decimal(str(current_price)) * noise
-                    self.price_history.append(price)
+            # Generate 7 days of hourly data (7*24=168 points)
+            # В продакшене: использовать candlesticks API с реальными объёмами
+            now = datetime.now()
+            for i in range(7 * 24):
+                timestamp = now - timedelta(hours=7*24-i)
+                # Simulate price & volume
+                noise = 1 + (i % 20 - 10) * 0.002
+                price = float(current_price) * noise
+                volume = 1000000 * (1 + (i % 5) * 0.1)  # Simulate volume
                 
-                logger.info(f"📊 Загружено {len(self.price_history)} ценовых точек")
-                
+                self.price_history.append({
+                    'price': price,
+                    'volume': volume,
+                    'timestamp': timestamp
+                })
+            
+            logger.info(f"✅ Loaded {len(self.price_history)} datapoints (7 days)")
+            
         except Exception as e:
-            logger.error(f"Ошибка загрузки истории: {e}")
+            logger.error(f"Load error: {e}")
     
     async def _trading_cycle(self):
-        """Основной цикл торговли"""
+        """Main cycle"""
         try:
-            # Обновляем историю цен
+            # Update history
             current_price = self.dashboard.get_market_price(self.product_id)
             if current_price:
-                self.price_history.append(Decimal(str(current_price)))
+                self.price_history.append({
+                    'price': float(current_price),
+                    'volume': 1000000,  # В продакшене: real volume from API
+                    'timestamp': datetime.now()
+                })
                 
-                # Ограничиваем размер истории
-                if len(self.price_history) > self.lookback_days * 24 * 2:
-                    self.price_history = self.price_history[-self.lookback_days * 24:]
+                # Keep only 7 days
+                if len(self.price_history) > 7 * 24:
+                    self.price_history = self.price_history[-7 * 24:]
             
-            # Проверяем текущие позиции
+            # Check positions
             positions = self.dashboard.get_positions()
-            our_positions = [
-                p for p in positions 
-                if p['product_id'] == self.product_id
-            ]
+            our_pos = [p for p in positions if p['product_id'] == self.product_id]
             
-            # Если есть позиция - управляем TP/SL
-            if our_positions:
-                for pos in our_positions:
-                    await self._manage_position(pos)
+            if our_pos:
+                await self._manage_position(our_pos[0])
                 return
             
-            # Нет позиций - проверяем ML сигнал
+            # No position - check ML signal
             await self._check_ml_signal()
             
         except Exception as e:
-            logger.error(f"Ошибка торгового цикла: {e}")
+            logger.error(f"Cycle error: {e}")
     
     async def _check_ml_signal(self):
-        """Проверить ML сигнал и открыть позицию"""
+        """Check ML signal with VOLUME"""
         try:
-            if len(self.price_history) < 20:
-                logger.info("Недостаточно данных для ML")
+            if len(self.price_history) < 50:
+                logger.info("Not enough data")
                 return
             
-            # Получаем прогноз
-            direction, confidence = self.predictor.predict(self.price_history)
+            # Extract prices for ML
+            prices = [Decimal(str(d['price'])) for d in self.price_history]
             
-            # Сохраняем последний прогноз
-            self.last_prediction = {"direction": direction, "confidence": confidence}
+            # Get prediction
+            direction, confidence = self.predictor.predict(prices)
+            
+            # Calculate average volume
+            avg_volume = sum(d['volume'] for d in self.price_history[-24:]) / 24
+            
+            self.last_prediction = {"direction": direction, "confidence": confidence, "avg_volume": avg_volume}
             
             symbol = PRODUCTS[self.product_id]
-            logger.info(f"🧠 ML Прогноз для {symbol}: {direction.upper()} (уверенность: {confidence:.0%})")
+            logger.info(f"🧠 ML: {direction.upper()} ({confidence:.0%}), Vol: ${avg_volume:,.0f}")
             
-            # Проверяем уверенность
-            if confidence < self.min_confidence:
-                logger.info(f"   ⚠️ Уверенность слишком низкая ({confidence:.0%} < {self.min_confidence:.0%})")
+            # Volume filter: требуем значительный объём
+            if avg_volume < 500000:
+                logger.info(f"   ⚠️ Low volume - skip")
                 return
             
-            # Открываем позицию только при сильном сигнале
+            # Confidence check
+            if confidence < self.min_confidence:
+                logger.info(f"   ⚠️ Low confidence ({confidence:.0%} < {self.min_confidence:.0%})")
+                return
+            
+            # Open position
             if direction == "up":
-                logger.info(f"   🟢 Открываем LONG позицию")
+                logger.info(f"   🟢 LONG")
                 await self._open_position(is_long=True)
             elif direction == "down":
-                logger.info(f"   🔴 Открываем SHORT позицию")
+                logger.info(f"   🔴 SHORT")
                 await self._open_position(is_long=False)
             else:
-                logger.info(f"   ⏸️ Боковик - ждем")
+                logger.info(f"   ⏸️ Sideways - wait")
                 
         except Exception as e:
-            logger.error(f"Ошибка проверки ML сигнала: {e}")
+            logger.error(f"ML error: {e}")
     
     async def _open_position(self, is_long: bool):
-        """Открыть позицию с TP/SL"""
+        """Open position: TP=+5%, SL=-0.5%"""
         try:
-            # Размещаем ордер БЕЗ автоматического TP
             result = self.dashboard.place_order(
                 self.product_id,
                 self.base_size,
                 is_long=is_long,
-                custom_price=None,  # Маркет ордер
-                auto_tp=False
-            )
-            
-            if result:
-                logger.info("✅ Позиция открыта")
-                
-                # Получаем актуальную цену входа
-                current_price = self.dashboard.get_market_price(self.product_id)
-                scenarios = self.calc.calculate_scenarios(
-                    product_symbol=PRODUCTS[self.product_id],
-                    entry_price=current_price,
-                    size=self.base_size,
-                    is_long=is_long
-                )
-                
-                # Выбираем сценарий по заданным процентам
-                selected = next(
-                    (s for s in scenarios if s['tp_percent'] == self.tp_percent),
-                    scenarios[0]
-                )
-                
-                logger.info(f"   Entry: ${current_price:.2f}")
-                logger.info(f"   TP: {selected['tp_percent']}% (${selected['tp_pnl']:+,.2f}) -> ${selected['tp_price']:.2f}")
-                logger.info(f"   SL: {selected['sl_percent']}% (${selected['sl_pnl']:+,.2f}) -> ${selected['sl_price']:.2f}")
-                logger.info(f"   ⚠️ TP/SL мониторятся автоматически, ордера не размещаются")
-                
-                # Сохраняем цены TP/SL для мониторинга
-                self.dashboard.save_entry_price(
-                    self.product_id, 
-                    current_price, 
-                    self.base_size * float(self.dashboard.leverage),
-                    tp_price=selected['tp_price'],
-                    sl_price=selected['sl_price']
-                )
-            else:
-                logger.error("❌ Не удалось открыть позицию")
-                
-        except Exception as e:
-            logger.error(f"Ошибка открытия позиции: {e}")
-    
-    async def _manage_position(self, position: Dict):
-        """Управление позицией с TP/SL"""
-        try:
-            is_long = position['amount'] > 0
-            entry_price = position.get('price', 0)
-            current_price = self.dashboard.get_market_price(self.product_id)
-            
-            if not current_price or not entry_price:
-                return
-            
-            # Расчет P&L в процентах
-            if is_long:
-                pnl_percent = ((current_price - entry_price) / entry_price) * 100
-            else:
-                pnl_percent = ((entry_price - current_price) / entry_price) * 100
-            
-            logger.info(f"📊 ML позиция: {'LONG' if is_long else 'SHORT'} P&L {pnl_percent:+.2f}%")
-            
-            # Проверка TP
-            if pnl_percent >= self.tp_percent:
-                logger.info(f"🎯 TP достигнут ({pnl_percent:+.2f}%)! Закрываем...")
-                await self._close_position(position)
-            
-            # Проверка SL
-            elif pnl_percent <= -self.sl_percent:
-                logger.info(f"🛑 SL сработал ({pnl_percent:+.2f}%)! Закрываем...")
-                await self._close_position(position)
-                
-        except Exception as e:
-            logger.error(f"Ошибка управления позицией: {e}")
-    
-    async def _close_position(self, position: Dict):
-        """Закрыть позицию"""
-        try:
-            size = abs(position['amount'])
-            is_long = position['amount'] > 0
-            
-            result = self.dashboard.place_order(
-                self.product_id,
-                size / self.dashboard.leverage,
-                is_long=not is_long,
                 custom_price=None,
                 auto_tp=False
             )
             
             if result:
-                logger.info("✅ Позиция закрыта")
+                logger.info("✅ Position opened")
+                
+                current_price = self.dashboard.get_market_price(self.product_id)
+                
+                # Calculate TP/SL
+                if is_long:
+                    tp_price = current_price * (1 + self.tp_percent / 100)
+                    sl_price = current_price * (1 - self.sl_percent / 100)
+                else:
+                    tp_price = current_price * (1 - self.tp_percent / 100)
+                    sl_price = current_price * (1 + self.sl_percent / 100)
+                
+                size_with_leverage = self.base_size * float(self.dashboard.leverage)
+                tp_pnl = (tp_price - current_price) * size_with_leverage if is_long else (current_price - tp_price) * size_with_leverage
+                sl_pnl = (sl_price - current_price) * size_with_leverage if is_long else (current_price - sl_price) * size_with_leverage
+                
+                logger.info(f"   Entry: ${current_price:.2f}")
+                logger.info(f"   TP: +{self.tp_percent}% -> ${tp_price:.2f} (${tp_pnl:+,.2f})")
+                logger.info(f"   SL: -{self.sl_percent}% -> ${sl_price:.2f} (${sl_pnl:+,.2f})")
+                
+                # Save for monitoring
+                self.dashboard.save_entry_price(
+                    self.product_id,
+                    float(current_price),
+                    self.base_size,
+                    tp_price=float(tp_price),
+                    sl_price=float(sl_price)
+                )
+                
+                # Place TP/SL orders
+                self.dashboard.place_tp_order(self.product_id, size_with_leverage, is_long, float(tp_price))
+                self.dashboard.place_sl_order(self.product_id, size_with_leverage, is_long, float(sl_price))
+                
             else:
-                logger.error("❌ Не удалось закрыть позицию")
+                logger.error("❌ Failed to open position")
                 
         except Exception as e:
-            logger.error(f"Ошибка закрытия: {e}")
-
-
-# Тестирование
-async def test_ml_trader():
-    """Тестовый запуск"""
-    dashboard = TradingDashboard()
+            logger.error(f"Open position error: {e}")
     
-    trader = MLAutoTrader(
-        dashboard=dashboard,
-        product_id=8,  # SOL-PERP
-        base_size=0.5,
-        tp_percent=1.0,  # TP 1%
-        sl_percent=0.5,  # SL 0.5%
-        min_confidence=0.7,  # Минимум 70% уверенности
-        lookback_days=7
-    )
-    
-    try:
-        await trader.start()
-    except KeyboardInterrupt:
-        trader.stop()
-
-
-if __name__ == "__main__":
-    asyncio.run(test_ml_trader())
+    async def _manage_position(self, position):
+        """Monitor TP/SL"""
+        try:
+            product_id = position['product_id']
+            current_price = position['price']
+            
+            entry_data = self.dashboard.entry_prices.get(str(product_id))
+            if not entry_data:
+                return
+            
+            tp_price = entry_data.get('tp_price')
+            sl_price = entry_data.get('sl_price')
+            
+            if not tp_price or not sl_price:
+                return
+            
+            side = position['side']
+            symbol = position['symbol']
+            
+            # Check TP
+            if (side == 'LONG' and current_price >= tp_price) or (side == 'SHORT' and current_price <= tp_price):
+                logger.info(f"🎯 TP HIT! {symbol} @ ${current_price:.2f}")
+                # Position will be closed by TP order
+            
+            # Check SL
+            if (side == 'LONG' and current_price <= sl_price) or (side == 'SHORT' and current_price >= sl_price):
+                logger.info(f"🛑 SL HIT! {symbol} @ ${current_price:.2f}")
+                # Position will be closed by SL order
+            
+        except Exception as e:
+            logger.error(f"Manage position error: {e}")

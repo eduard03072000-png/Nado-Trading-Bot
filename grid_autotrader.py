@@ -6,7 +6,7 @@ import asyncio
 import logging
 from decimal import Decimal
 import time
-from trading_dashboard_v2 import TradingDashboard
+from trading_dashboard import TradingDashboard
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +231,7 @@ class GridAutoTrader:
             from nado_protocol.engine_client.types.execute import CancelProductOrdersParams
             
             params = CancelProductOrdersParams(
-                sender=self.dashboard.user_subaccount,
+                sender=self.dashboard.sender_hex,
                 productIds=[self.product_id]
             )
             
