@@ -225,28 +225,23 @@ class GridAutoTrader:
                                 threshold_price = self.avg_entry_price * 0.995
                                 
                                 if curr_price < threshold_price:
-                                    elapsed_min = (time.time() - self.risk_check_start_time) / 60
                                     logger.info(f"⚠️ Цена ${curr_price:.2f} < ${threshold_price:.2f} (-0.5% от средней)")
-                                    logger.info(f"   Прошло {elapsed_min:.1f} мин")
+                                    logger.info(f"🔴 РИСК: Цена ушла вниз → ЗАКРЫВАЕМ СРАЗУ")
                                     
-                                    if elapsed_min >= 5:
-                                        logger.info(f"🔴 РИСК: Цена ушла вниз > 5 мин → ЗАКРЫВАЕМ")
-                                        await self._cancel_all()
-                                        await asyncio.sleep(1)
-                                        result = self.dashboard.close_position(self.product_id)
-                                        
-                                        if result:
-                                            logger.info("✅ Позиция закрыта по риску")
-                                            self.prev_size = 0
-                                            self.entry_count = 0
-                                            self.position_side = None
-                                            self.avg_entry_price = 0
-                                            self.risk_check_start_time = None
-                                            await asyncio.sleep(2)
-                                            await self._place_grid(place_long=True, place_short=True, long_size=self.base_size, short_size=self.base_size)
+                                    await self._cancel_all()
+                                    await asyncio.sleep(1)
+                                    result = self.dashboard.close_position(self.product_id)
+                                    
+                                    if result:
+                                        logger.info("✅ Позиция закрыта по риску")
+                                        self.prev_size = 0
+                                        self.entry_count = 0
+                                        self.position_side = None
+                                        self.avg_entry_price = 0
+                                        self.risk_check_start_time = None
+                                        await asyncio.sleep(2)
+                                        await self._place_grid(place_long=True, place_short=True, long_size=self.base_size, short_size=self.base_size)
                                         continue  # Переходим к следующей итерации цикла
-                                    else:
-                                        logger.info(f"📊 {curr_side}: {curr_size:.2f} | Риск -{deviation*100:.2f}% (ждём 5 мин)")
                                 else:
                                     logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров")
                             
@@ -256,28 +251,23 @@ class GridAutoTrader:
                                 threshold_price = self.avg_entry_price * 1.005
                                 
                                 if curr_price > threshold_price:
-                                    elapsed_min = (time.time() - self.risk_check_start_time) / 60
                                     logger.info(f"⚠️ Цена ${curr_price:.2f} > ${threshold_price:.2f} (+0.5% от средней)")
-                                    logger.info(f"   Прошло {elapsed_min:.1f} мин")
+                                    logger.info(f"🔴 РИСК: Цена ушла вверх → ЗАКРЫВАЕМ СРАЗУ")
                                     
-                                    if elapsed_min >= 5:
-                                        logger.info(f"🔴 РИСК: Цена ушла вверх > 5 мин → ЗАКРЫВАЕМ")
-                                        await self._cancel_all()
-                                        await asyncio.sleep(1)
-                                        result = self.dashboard.close_position(self.product_id)
-                                        
-                                        if result:
-                                            logger.info("✅ Позиция закрыта по риску")
-                                            self.prev_size = 0
-                                            self.entry_count = 0
-                                            self.position_side = None
-                                            self.avg_entry_price = 0
-                                            self.risk_check_start_time = None
-                                            await asyncio.sleep(2)
-                                            await self._place_grid(place_long=True, place_short=True, long_size=self.base_size, short_size=self.base_size)
-                                        continue  # Переходим к следующей итерации цикла
-                                    else:
-                                        logger.info(f"📊 {curr_side}: {curr_size:.2f} | Риск +{deviation*100:.2f}% (ждём 5 мин)")
+                                    await self._cancel_all()
+                                    await asyncio.sleep(1)
+                                    result = self.dashboard.close_position(self.product_id)
+                                    
+                                    if result:
+                                        logger.info("✅ Позиция закрыта по риску")
+                                        self.prev_size = 0
+                                        self.entry_count = 0
+                                        self.position_side = None
+                                        self.avg_entry_price = 0
+                                        self.risk_check_start_time = None
+                                        await asyncio.sleep(2)
+                                        await self._place_grid(place_long=True, place_short=True, long_size=self.base_size, short_size=self.base_size)
+                                    continue  # Переходим к следующей итерации цикла
                                 else:
                                     logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров")
                         else:
