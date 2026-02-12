@@ -15,14 +15,14 @@ logger = logging.getLogger(__name__)
 class NadoSDKClient:
     """Wrapper around official Nado Protocol SDK"""
     
-    def __init__(self, private_key: str, network: str = "testnet", subaccount_name: str = "default"):
+    def __init__(self, private_key: str, network: str = "testnet", subaccount_name: str = ""):
         """
         Initialize Nado SDK client
         
         Args:
             private_key: Private key (with or without 0x)
             network: "mainnet" or "testnet"
-            subaccount_name: Subaccount name (default: "default")
+            subaccount_name: Subaccount name (empty string "" = trade directly from wallet)
         """
         self.network = network
         self.subaccount_name = subaccount_name
@@ -33,7 +33,8 @@ class NadoSDKClient:
         
         self.address = self.client.context.signer.address
         
-        # Получаем sender_hex для subaccount (как в рабочем боте)
+        # Получаем sender_hex
+        # Пустая строка "" = торговля напрямую с кошелька (без субаккаунта)
         params = SubaccountParams(
             subaccount_owner=self.address, 
             subaccount_name=subaccount_name
@@ -43,7 +44,10 @@ class NadoSDKClient:
         self.products = self.client.market.get_all_product_symbols()
         
         logger.info(f"SDK Client ready: {self.address}")
-        logger.info(f"Subaccount: {subaccount_name} ({self.sender_hex[:10]}...)")
+        if subaccount_name:
+            logger.info(f"Subaccount: {subaccount_name} ({self.sender_hex[:10]}...)")
+        else:
+            logger.info(f"Trading directly from wallet (no subaccount)")
         logger.info(f"Loaded {len(self.products)} products")
     
     def get_product_id(self, symbol: str) -> Optional[int]:
@@ -112,37 +116,74 @@ class NadoSDKClient:
         size: Decimal,
         price: Optional[Decimal] = None  # None = market order
     ) -> Optional[Dict]:
-        """Place order"""
+        """
+        Place order
+        
+        Args:
+            symbol: Trading pair (e.g. 'BTC-PERP')
+            side: "buy" or "sell"
+            size: Order size
+            price: Limit price (None for market order)
+        """
         product_id = self.get_product_id(symbol)
         if not product_id:
             logger.error(f"Product {symbol} not found")
             return None
         
         try:
-            amount_x18 = int(size * Decimal(10**18))
-            if side == "sell":
-                amount_x18 = -amount_x18
+            from nado_protocol.engine_client.types import OrderParams, PlaceOrderParams
+            from nado_protocol.utils import get_expiration_timestamp, gen_order_nonce, to_x18
+            from nado_protocol.utils.order import OrderType, build_appendix
             
-            if price:
-                # Limit order
-                price_x18 = int(price * Decimal(10**18))
-                result = await self.client.perp.place_order(
-                    product_id=product_id,
-                    order_amount=amount_x18,
-                    price_x18=price_x18
-                )
+            # Конвертируем amount в int (x18)
+            amount_decimals = 18  # Nado использует 18 decimals
+            amount_value = int(size * Decimal(10**amount_decimals))
+            signed_amount = -amount_value if side.lower() == "sell" else amount_value
+            
+            # Market order: используем текущую цену с небольшим slippage
+            if price is None:
+                # Получаем текущую цену
+                current_price = await self.get_market_price(symbol)
+                if not current_price:
+                    logger.error(f"Could not get price for {symbol}")
+                    return None
+                
+                # Добавляем 0.5% slippage
+                slippage = Decimal("0.005")
+                if side.lower() == "buy":
+                    price = current_price * (Decimal("1") + slippage)
+                else:
+                    price = current_price * (Decimal("1") - slippage)
+                
+                post_only = False  # Market order
+                logger.info(f"Market order: {side} {size} {symbol} @ ~{price}")
             else:
-                # Market order
-                result = await self.client.perp.place_market_order(
-                    product_id=product_id,
-                    amount=amount_x18
-                )
+                post_only = True  # Limit order
+                logger.info(f"Limit order: {side} {size} {symbol} @ {price}")
             
-            logger.info(f"Order placed: {side} {size} {symbol} @ {price or 'MARKET'}")
-            return result
+            # Создаём ордер
+            order_type = OrderType.POST_ONLY if post_only else OrderType.DEFAULT
+            appendix = build_appendix(order_type, reduce_only=False)
+            expiration = get_expiration_timestamp(60)  # 60 sec
+            nonce = gen_order_nonce()
+            
+            order = OrderParams(
+                priceX18=to_x18(float(price)),
+                amount=signed_amount,
+                nonce=nonce,
+                expiration=expiration,
+                sender=self.sender_hex,
+                appendix=appendix,
+            )
+            
+            params = PlaceOrderParams(product_id=product_id, order=order)
+            resp = self.client.market.place_order(params)
+            
+            logger.info(f"Order placed successfully: {side} {size} {symbol}")
+            return {"response": resp, "order": order}
         
         except Exception as e:
-            logger.error(f"Place order error: {e}")
+            logger.error(f"Place order error: {e}", exc_info=True)
             return None
     
     async def cancel_order(self, product_id: int, digest: str) -> bool:

@@ -41,25 +41,37 @@ def get_env_variable(name: str, default: str = None, required: bool = True) -> s
 # WALLET
 # ═══════════════════════════════════════════════════════
 
-def get_nado_key() -> str:
+def get_nado_key(wallet_num: int = 1) -> str:
     """Получить приватный ключ для Nado
     
-    ПРИОРИТЕТ: BOT_PRIVATE_KEY (Linked Signer)
+    Args:
+        wallet_num: Номер кошелька (1 или 2)
+    
+    ПРИОРИТЕТ: BOT_PRIVATE_KEY / BOT_PRIVATE_KEY_2 (Linked Signer)
     Fallback: NADO_PRIVATE_KEY (только для setup_linked_signer.py)
     """
-    # ПРИОРИТЕТ: BOT_PRIVATE_KEY (бот как Linked Signer)
-    key = get_env_variable("BOT_PRIVATE_KEY", required=False)
-    
-    # Fallback: NADO_PRIVATE_KEY (только для setup)
-    if not key:
-        key = get_env_variable("NADO_PRIVATE_KEY", required=False)
-    
-    if not key:
-        raise ValueError(
-            "❌ Не найден BOT_PRIVATE_KEY в .env файле!\n"
-            "   BOT_PRIVATE_KEY должен быть установлен как Linked Signer.\n"
-            "   Запустите: python setup_linked_signer.py"
-        )
+    if wallet_num == 2:
+        key = get_env_variable("BOT_PRIVATE_KEY_2", required=False)
+        if not key:
+            raise ValueError(
+                "❌ Не найден BOT_PRIVATE_KEY_2 в .env файле!\n"
+                "   Добавьте второй кошелек в .env:\n"
+                "   BOT_PRIVATE_KEY_2=your_second_wallet_private_key"
+            )
+    else:
+        # ПРИОРИТЕТ: BOT_PRIVATE_KEY (бот как Linked Signer)
+        key = get_env_variable("BOT_PRIVATE_KEY", required=False)
+        
+        # Fallback: NADO_PRIVATE_KEY (только для setup)
+        if not key:
+            key = get_env_variable("NADO_PRIVATE_KEY", required=False)
+        
+        if not key:
+            raise ValueError(
+                "❌ Не найден BOT_PRIVATE_KEY в .env файле!\n"
+                "   BOT_PRIVATE_KEY должен быть установлен как Linked Signer.\n"
+                "   Запустите: python setup_linked_signer.py"
+            )
     
     # Добавить 0x если отсутствует
     if not key.startswith("0x"):
@@ -68,14 +80,34 @@ def get_nado_key() -> str:
     return key
 
 
-def get_wallet_address() -> str:
-    """Получить адрес кошелька"""
-    return get_env_variable("NADO_WALLET_ADDRESS", required=False)
+def get_wallet_address(wallet_num: int = 1) -> str:
+    """Получить адрес кошелька
+    
+    Args:
+        wallet_num: Номер кошелька (1 или 2)
+    """
+    if wallet_num == 2:
+        addr = get_env_variable("NADO_WALLET_ADDRESS_2", required=False)
+        if not addr:
+            raise ValueError("❌ Не найден NADO_WALLET_ADDRESS_2 в .env файле!")
+        return addr
+    else:
+        return get_env_variable("NADO_WALLET_ADDRESS", required=False)
 
 
-def get_subaccount_id() -> str:
-    """Получить subaccount ID (для работы без приватного ключа)"""
-    return get_env_variable("NADO_SUBACCOUNT_ID", required=False)
+def get_subaccount_id(wallet_num: int = 1) -> str:
+    """Получить subaccount ID
+    
+    Args:
+        wallet_num: Номер кошелька (1 или 2)
+    """
+    if wallet_num == 2:
+        subaccount = get_env_variable("NADO_SUBACCOUNT_ID_2", required=False)
+        if not subaccount:
+            raise ValueError("❌ Не найден NADO_SUBACCOUNT_ID_2 в .env файле!")
+        return subaccount
+    else:
+        return get_env_variable("NADO_SUBACCOUNT_ID", required=False)
 
 
 # ═══════════════════════════════════════════════════════

@@ -326,29 +326,38 @@ class TradingDashboard:
         
         return float(pnl)	
 
-    def __init__(self, user_subaccount_id):
+    def __init__(self, leverage=10):
         """
-        user_subaccount_id: ОБЯЗАТЕЛЬНЫЙ subaccount ID пользователя с NADO DEX
+        Инициализация через приватный ключ из .env
+        Args:
+            leverage: Плечо (по умолчанию 10x)
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         network = config.get_network()
         mode = NadoClientMode.MAINNET if network == "mainnet" else NadoClientMode.TESTNET
         
         self.network = network
         self.client = create_nado_client(mode=mode, signer=config.get_nado_key())
-        self.bot_wallet = self.client.context.signer.address
+        self.wallet = self.client.context.signer.address
         
-        # Используем subaccount пользователя
-        self.user_subaccount = user_subaccount_id
-        self.sender_hex = user_subaccount_id
+        # ИСПОЛЬЗУЕМ СУБАККАУНТ из .env!
+        subaccount_id = config.get_subaccount_id()
+        if subaccount_id:
+            self.sender_hex = subaccount_id
+            logger.info(f"✅ Using SUBACCOUNT: {subaccount_id}")
+        else:
+            # Fallback: создаём default субаккаунт
+            wallet_clean = self.wallet.lower().replace('0x', '')
+            self.sender_hex = '0x' + wallet_clean + '64656661756c74' + '0' * (64 - len(wallet_clean) - 14)
+            logger.info(f"⚠️ No subaccount in .env, using default: {self.sender_hex}")
         
-        # Извлекаем адрес владельца из subaccount_id (первые 40 символов после 0x)
-        self.wallet = '0x' + user_subaccount_id[2:42]
-        
-        print(f"Bot: {self.bot_wallet}")
-        print(f"User subaccount: {self.user_subaccount}")
+        logger.info(f"Wallet: {self.wallet}")
+        logger.info(f"Network: {self.network}")
         
         # Настройки
-        self.leverage = Decimal("10")
+        self.leverage = Decimal(str(leverage))
         self.margin_mode = "AUTO"
         
         # Хранилище для entry prices
@@ -362,7 +371,9 @@ class TradingDashboard:
     def get_balance(self):
         """Получить баланс аккаунта"""
         try:
-            summary = self.client.subaccount.get_engine_subaccount_summary(self.sender_hex)
+            # Используем subaccount_hex для получения баланса (если есть)
+            sender = getattr(self, 'subaccount_hex', self.sender_hex)
+            summary = self.client.subaccount.get_engine_subaccount_summary(sender)
             
             if hasattr(summary, 'healths') and summary.healths and len(summary.healths) > 0:
                 health = summary.healths[0]
@@ -380,7 +391,9 @@ class TradingDashboard:
     def get_positions(self):
         """Получить открытые позиции"""
         try:
-            summary = self.client.subaccount.get_engine_subaccount_summary(self.sender_hex)
+            # Используем subaccount_hex для получения позиций (если есть)
+            sender = getattr(self, 'subaccount_hex', self.sender_hex)
+            summary = self.client.subaccount.get_engine_subaccount_summary(sender)
             positions = []
             
             if hasattr(summary, 'perp_balances') and summary.perp_balances:
@@ -485,7 +498,7 @@ class TradingDashboard:
             
         return None
     
-    def place_order(self, product_id, size, is_long, custom_price=None, auto_tp=True, ttl_seconds=60):
+    def place_order(self, product_id, size, is_long, custom_price=None, auto_tp=True, ttl_seconds=60, client_order_id=None):
         """Открыть позицию с Isolated Margin
         
         Args:
@@ -495,6 +508,7 @@ class TradingDashboard:
             custom_price: Кастомная цена (для лимитных ордеров)
             auto_tp: Автоматически размещать TP ордер (по умолчанию True)
             ttl_seconds: Time-To-Live для ордера в секундах (по умолчанию 60)
+            client_order_id: Уникальный ID ордера для фильтрации (опционально)
         """
         try:
             from nado_protocol.engine_client.types.execute import PlaceOrderParams
@@ -616,10 +630,10 @@ class TradingDashboard:
                 # Если auto_tp=True, размещаем TP ордер на бирже
                 if auto_tp:
                     print(f"\n📊 Размещаем TP ордер на бирже...")
-                    # ВАЖНО: TP ордер размещаем на БАЗОВЫЙ размер (без плеча)
+                    # TP ордер размещаем на размер С ПЛЕЧОМ (чтобы закрыть всю позицию)
                     tp_result = self.place_tp_order(
                         product_id=product_id,
-                        size=size,  # БЕЗ плеча!
+                        size=size_with_leverage,  # С плечом!
                         is_long=is_long,
                         target_price=float(tp_price_calc)
                     )
@@ -653,10 +667,14 @@ class TradingDashboard:
             
             # Определяем направление и размер
             is_long = current_pos['amount'] > 0
-            position_size = abs(current_pos['amount'])
+            position_size_with_leverage = abs(current_pos['amount'])
+            
+            # ИСПРАВЛЕНО: amount уже с плечом, НЕ нужно делить!
+            # У нас в позиции уже лежит размер С ПЛЕЧОМ!
+            position_size = position_size_with_leverage
             
             print(f"   Закрытие позиции MARKET ордером...")
-            print(f"   Размер: {position_size:.4f}")
+            print(f"   Размер позиции (с плечом): {position_size:.4f}")
             
             # Нормализуем размер
             size_decimal = Decimal(str(position_size))
