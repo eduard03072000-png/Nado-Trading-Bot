@@ -163,11 +163,11 @@ def load_traders_status():
 # Conversation states
 WAITING_WALLET, WAITING_PRODUCT, WAITING_SIZE, WAITING_LEVERAGE = range(4)
 WAITING_GRID_WALLET, WAITING_GRID_PRODUCT, WAITING_GRID_MODE, WAITING_GRID_SIZE, WAITING_GRID_OFFSET = range(4, 9)
-WAITING_AUTO_WALLET, WAITING_AUTO_PRODUCT, WAITING_AUTO_SIZE, WAITING_AUTO_TP_SL, WAITING_AUTO_GRID_OFFSET = range(9, 14)
-WAITING_ML_WALLET, WAITING_ML_PRODUCT, WAITING_ML_SIZE, WAITING_AUTO_ML_CONFIDENCE, WAITING_ML_TP_SL = range(14, 19)
-WAITING_TPSL_PRODUCT = 19  # Separate state for calculator
-WAITING_TP_MODE, WAITING_TP_PRICE, WAITING_TP_PERCENT = range(20, 23)
-WAITING_SL_MODE, WAITING_SL_PRICE, WAITING_SL_PERCENT = range(23, 26)  # For TP setup
+WAITING_AUTO_WALLET, WAITING_AUTO_PRODUCT, WAITING_AUTO_SIZE, WAITING_AUTO_TP_SL, WAITING_AUTO_GRID_OFFSET, WAITING_AUTO_STRATEGY = range(9, 15)
+WAITING_ML_WALLET, WAITING_ML_PRODUCT, WAITING_ML_SIZE, WAITING_AUTO_ML_CONFIDENCE, WAITING_ML_TP_SL = range(15, 20)
+WAITING_TPSL_PRODUCT = 20  # Separate state for calculator
+WAITING_TP_MODE, WAITING_TP_PRICE, WAITING_TP_PERCENT = range(21, 24)
+WAITING_SL_MODE, WAITING_SL_PRICE, WAITING_SL_PERCENT = range(24, 27)  # For TP setup
 
 # Temporary user data storage
 user_data_storage = {}
@@ -1777,53 +1777,95 @@ async def auto_grid_handle_offset(update: Update, context: ContextTypes.DEFAULT_
         product_id = get_wallet_data(context, 'auto_grid_product')
         size = get_wallet_data(context, 'auto_grid_size')
         symbol = PRODUCTS[product_id]
-
-        await update.message.reply_text("🔄 Starting Grid Auto-Trader...")
-
-        from grid_autotrader import GridAutoTrader
-
-        # ВАЖНО: Используем wallet_num из context, а не dashboard.current_wallet
-        # потому что dashboard.current_wallet может измениться!
-        wallet_num = context.user_data.get('wallet_num', 1)
-        isolated_dashboard = dashboard.get_isolated_dashboard(wallet_num)
         
-        trader = GridAutoTrader(
-            dashboard=isolated_dashboard,  # Изолированный dashboard!
-            product_id=product_id,
-            base_size=size,
-            grid_offset=offset
-        )
-
-        # Используем новый API для выбранного кошелька
-        current_traders = active_traders[wallet_num]
-        if current_traders['grid'] and current_traders['grid'].running:
-            current_traders['grid'].stop()
-            await asyncio.sleep(2)
-
-        active_traders[wallet_num]['grid'] = trader
-        save_traders_status()
-        asyncio.create_task(trader.start())
-
-        # Кнопка "Назад в меню"
-        keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            f"✅ <b>GRID AUTO STARTED</b>\n\n"
-            f"📊 Pair: <b>{symbol}</b>\n"
+        # Сохраняем offset для следующего шага
+        set_wallet_data(context, 'auto_grid_offset', offset)
+        
+        # Запрашиваем выбор стратегии
+        text = (
+            f"🤖 <b>GRID AUTO: {symbol}</b>\n"
             f"💰 Size: <b>{size}</b>\n"
-            f"📏 Grid: <b>±{offset}%</b>",
-            parse_mode="HTML",
-            reply_markup=reply_markup
+            f"📏 Grid: <b>±{offset}%</b>\n\n"
+            "<b>Choose strategy:</b>"
         )
-
-        return ConversationHandler.END
-
-    except Exception as e:
-        logger.error(f"ERROR in auto_grid_handle_offset: {e}", exc_info=True)
-        await update.message.reply_text("❌ Введите число от 0.1 до 5:")
+        
+        keyboard = [
+            [InlineKeyboardButton("🕯️ Candle Restart (PnL -$5)", callback_data='strategy_candle')],
+            [InlineKeyboardButton("⚡ Risk Stop (0.5% deviation)", callback_data='strategy_risk')],
+            [InlineKeyboardButton("« Back", callback_data='back')]
+        ]
+        
+        await update.message.reply_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        return WAITING_AUTO_STRATEGY
+        
+    except:
+        await update.message.reply_text("❌ Invalid format. Введите число от 0.1 до 5:")
         return WAITING_AUTO_GRID_OFFSET
 
+
+async def auto_grid_select_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Strategy selection for Grid Auto-Trader"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Определяем выбранную стратегию
+    strategy_mode = "candle_restart" if query.data == 'strategy_candle' else "risk_stop"
+    
+    product_id = get_wallet_data(context, 'auto_grid_product')
+    size = get_wallet_data(context, 'auto_grid_size')
+    offset = get_wallet_data(context, 'auto_grid_offset')
+    symbol = PRODUCTS[product_id]
+    
+    strategy_name = "🕯️ Candle Restart" if strategy_mode == "candle_restart" else "⚡ Risk Stop"
+    strategy_desc = "PnL -$5 → Close → Wait opposite candle" if strategy_mode == "candle_restart" else "0.5% deviation → Close immediately"
+    
+    await query.edit_message_text(f"🔄 Starting Grid Auto-Trader with {strategy_name}...")
+    
+    from grid_autotrader import GridAutoTrader
+    
+    # ВАЖНО: Используем wallet_num из context
+    wallet_num = context.user_data.get('wallet_num', 1)
+    isolated_dashboard = dashboard.get_isolated_dashboard(wallet_num)
+    
+    trader = GridAutoTrader(
+        dashboard=isolated_dashboard,
+        product_id=product_id,
+        base_size=size,
+        grid_offset=offset,
+        strategy_mode=strategy_mode  # ✅ ПЕРЕДАЕМ ВЫБРАННУЮ СТРАТЕГИЮ!
+    )
+    
+    # Используем новый API для выбранного кошелька
+    current_traders = active_traders[wallet_num]
+    if current_traders['grid'] and current_traders['grid'].running:
+        current_traders['grid'].stop()
+        await asyncio.sleep(2)
+    
+    active_traders[wallet_num]['grid'] = trader
+    save_traders_status()
+    asyncio.create_task(trader.start())
+    
+    # Кнопка "Назад в меню"
+    keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.message.reply_text(
+        f"✅ <b>GRID AUTO STARTED</b>\n\n"
+        f"📊 Pair: <b>{symbol}</b>\n"
+        f"💰 Size: <b>{size}</b>\n"
+        f"📏 Grid: <b>±{offset}%</b>\n"
+        f"🎯 Strategy: <b>{strategy_name}</b>\n"
+        f"   └ {strategy_desc}",
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+    
+    return ConversationHandler.END
 
 
 async def auto_grid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3130,6 +3172,7 @@ def main():
             WAITING_AUTO_PRODUCT: [CallbackQueryHandler(auto_grid_select_product, pattern=r'^product_\d+$')],
             WAITING_AUTO_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, auto_grid_handle_size)],
             WAITING_AUTO_GRID_OFFSET: [MessageHandler(filters.TEXT & ~filters.COMMAND, auto_grid_handle_offset)],
+            WAITING_AUTO_STRATEGY: [CallbackQueryHandler(auto_grid_select_strategy, pattern=r'^strategy_(candle|risk)$')],
             WAITING_AUTO_TP_SL: [CallbackQueryHandler(auto_grid_start, pattern=r'^auto_grid_tpsl_\d+$')]
         },
         fallbacks=[

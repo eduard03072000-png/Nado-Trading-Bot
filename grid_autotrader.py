@@ -36,7 +36,8 @@ class GridAutoTrader:
         dashboard: TradingDashboard,
         product_id: int,
         base_size: float,
-        grid_offset: float = 0.1
+        grid_offset: float = 0.1,
+        strategy_mode: str = "candle_restart"  # "candle_restart" или "risk_stop"
     ):
         """
         Args:
@@ -48,6 +49,12 @@ class GridAutoTrader:
         self.dashboard = dashboard
         self.product_id = product_id
         self.base_size = base_size
+        self.strategy_mode = strategy_mode  # СТРАТЕГИЯ!
+        
+        # Параметры SL
+        self.MAX_LOSS_USD = 5.0  # Максимальный убыток в долларах
+        self.sl_active = False  # Флаг активности SL мониторинга
+        self.sl_close_candle_color = None  # Цвет свечи на которой закрылись
         self.grid_offset = grid_offset
         
         # Отслеживание своих ордеров по параметрам (price, size, side)
@@ -59,6 +66,117 @@ class GridAutoTrader:
         self.position_side = None  # "LONG" или "SHORT"
         self.avg_entry_price = 0  # Средняя цена входа
         self.risk_check_start_time = None  # Когда начали отслеживать риск
+    
+    def _get_last_candle(self):
+        """Получить последнюю 1min свечу"""
+        try:
+            # Используем exchange из dashboard
+            candles = self.dashboard.exchange.get_candlesticks(
+                self.product_id,
+                interval=60,  # 1min
+                limit=2  # Последние 2 свечи
+            )
+            if candles and len(candles) > 0:
+                last = candles[-1]
+                return {
+                    'open': float(last['o']),
+                    'close': float(last['c']),
+                    'high': float(last['h']),
+                    'low': float(last['l'])
+                }
+        except Exception as e:
+            logger.error(f"ERR getting candle: {e}")
+        return None
+    
+    def _calculate_pnl(self, position):
+        """Рассчитать PnL позиции в долларах"""
+        if not position:
+            return 0
+        
+        try:
+            curr_price = self.dashboard.get_market_price(self.product_id)
+            if not curr_price:
+                return 0
+            
+            # Размер без плеча
+            size = abs(position['amount']) / float(self.dashboard.leverage)
+            entry_price = position['price']
+            
+            if position['side'] == "LONG":
+                pnl = (curr_price - entry_price) * size
+            else:  # SHORT
+                pnl = (entry_price - curr_price) * size
+            
+            return pnl
+        except Exception as e:
+            logger.error(f"ERR PnL calc: {e}")
+            return 0
+    
+    async def _close_position(self):
+        """Закрыть позицию market ордером"""
+        try:
+            positions = self.dashboard.get_positions()
+            our_pos = next((p for p in positions if p['product_id'] == self.product_id), None)
+            
+            if not our_pos:
+                logger.info("ℹ️ Нет позиции для закрытия")
+                return
+            
+            size = abs(our_pos['amount']) / float(self.dashboard.leverage)
+            is_long_position = our_pos['side'] == "LONG"
+            
+            # Закрываем противоположным ордером market
+            self.dashboard.place_order(
+                self.product_id,
+                size,
+                is_long=not is_long_position,  # Противоположный
+                use_market_price=True
+            )
+            logger.info(f"✅ Позиция закрыта: {our_pos['side']} {size:.2f}")
+            
+        except Exception as e:
+            logger.error(f"ERR closing position: {e}")
+    
+    async def _wait_for_opposite_candle(self, close_color):
+        """Ждет свечу противоположного цвета"""
+        target_color = "GREEN" if close_color == "RED" else "RED"
+        logger.info(f"⏳ Ждем {target_color} свечу для перезапуска...")
+        
+        while True:
+            await asyncio.sleep(60)  # Ждем 1 минуту
+            candle = self._get_last_candle()
+            
+            if not candle:
+                continue
+            
+            color = "RED" if candle['close'] < candle['open'] else "GREEN"
+            logger.info(f"🔍 Свеча: {color} (open=${candle['open']:.2f}, close=${candle['close']:.2f})")
+            
+            if color == target_color:
+                logger.info(f"✅ {target_color} свеча! Перезапуск грида!")
+                return
+    
+    async def _restart_grid(self):
+        """Полный перезапуск grid"""
+        logger.info("🔄 ПЕРЕЗАПУСК GRID!")
+        
+        # Сброс состояния
+        self.entry_count = 0
+        self.prev_size = 0
+        self.position_side = None
+        self.avg_entry_price = 0
+        self.my_orders.clear()
+        self.sl_active = False
+        self.sl_close_candle_color = None
+        self.risk_check_start_time = None
+        
+        # Отменяем все ордера
+        await self._cancel_all()
+        await asyncio.sleep(0.5)
+        
+        # Новая grid
+        await self._place_grid(place_long=True, place_short=True)
+        logger.info("✅ Grid перезапущен!")
     
     def _filter_my_orders(self, all_orders):
         """Фильтрует только свои ордера из всех ордеров по продукту"""
@@ -189,20 +307,24 @@ class GridAutoTrader:
                             # Логика размещения новых ордеров
                             if self.entry_count == 2:
                                 # Второй вход (докуп) - ОТМЕНЯЕМ ВСЁ, размещаем только противоположное на ПОЛНЫЙ размер позиции
-                                # После этого третий вход НЕВОЗМОЖЕН - позиция закроется либо в плюс либо по риск-стопу
+                                # АКТИВИРУЕМ SL на -$5
                                 await self._cancel_all()
                                 await asyncio.sleep(0.5)
-                                self.risk_check_start_time = time.time()
                                 
                                 # ВАЖНО: Убираем плечо для размера ордера!
                                 base_position_size = curr_size / float(self.dashboard.leverage)
                                 
                                 if curr_side == "LONG":
                                     logger.info(f"⚠️ Entry #2 (ПОСЛЕДНИЙ): размещаем SHORT {base_position_size:.2f} (закроет всю позицию)")
+                                    logger.info(f"🛡️ АКТИВИРОВАН SL: -${self.MAX_LOSS_USD} (avg: ${self.avg_entry_price:.2f})")
                                     await self._place_grid(place_long=False, place_short=True, long_size=0, short_size=base_position_size)
                                 else:
                                     logger.info(f"⚠️ Entry #2 (ПОСЛЕДНИЙ): размещаем LONG {base_position_size:.2f} (закроет всю позицию)")
+                                    logger.info(f"🛡️ АКТИВИРОВАН SL: -${self.MAX_LOSS_USD} (avg: ${self.avg_entry_price:.2f})")
                                     await self._place_grid(place_long=True, place_short=False, long_size=base_position_size, short_size=0)
+                                
+                                # ВКЛЮЧАЕМ SL мониторинг
+                                self.sl_active = True
                         else:
                             # Это частичный fill старого ордера
                             logger.info(f"📊 {curr_side} {self.prev_size:.2f} → {curr_size:.2f} (ЧАСТИЧНЫЙ FILL +{added_size:.2f})")
@@ -213,65 +335,81 @@ class GridAutoTrader:
                                 logger.info(f"   ✅ Ордер исполнен ПОЛНОСТЬЮ - размещаем Grid")
                                 await self._place_grid(place_long=True, place_short=True)
                     
-                    # ПРОВЕРКА РИСКА: После entry #2 отслеживаем отклонение цены на 0.5%
-                    if self.entry_count >= 2 and self.risk_check_start_time is not None:
+                    # SL МОНИТОРИНГ: Проверяем по выбранной стратегии
+                    if self.sl_active:
                         curr_price = self.dashboard.get_market_price(self.product_id)
                         
-                        if curr_price:
-                            # Вычисляем отклонение от средней цены входа
-                            if curr_side == "LONG":
-                                # LONG позиция: проверяем падение цены ниже средней на 0.5%
-                                deviation = (self.avg_entry_price - curr_price) / self.avg_entry_price
-                                threshold_price = self.avg_entry_price * 0.995
-                                
-                                if curr_price < threshold_price:
-                                    logger.info(f"⚠️ Цена ${curr_price:.2f} < ${threshold_price:.2f} (-0.5% от средней)")
-                                    logger.info(f"🔴 РИСК: Цена ушла вниз → ЗАКРЫВАЕМ СРАЗУ")
-                                    
-                                    await self._cancel_all()
-                                    await asyncio.sleep(1)
-                                    result = self.dashboard.close_position(self.product_id)
-                                    
-                                    if result:
-                                        logger.info("✅ Позиция закрыта по риску")
-                                        self.prev_size = 0
-                                        self.entry_count = 0
-                                        self.position_side = None
-                                        self.avg_entry_price = 0
-                                        self.risk_check_start_time = None
-                                        await asyncio.sleep(2)
-                                        await self._place_grid(place_long=True, place_short=True, long_size=self.base_size, short_size=self.base_size)
-                                        continue  # Переходим к следующей итерации цикла
-                                else:
-                                    logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров")
-                            
-                            else:  # SHORT позиция
-                                # SHORT позиция: проверяем рост цены выше средней на 0.5%
-                                deviation = (curr_price - self.avg_entry_price) / self.avg_entry_price
-                                threshold_price = self.avg_entry_price * 1.005
-                                
-                                if curr_price > threshold_price:
-                                    logger.info(f"⚠️ Цена ${curr_price:.2f} > ${threshold_price:.2f} (+0.5% от средней)")
-                                    logger.info(f"🔴 РИСК: Цена ушла вверх → ЗАКРЫВАЕМ СРАЗУ")
-                                    
-                                    await self._cancel_all()
-                                    await asyncio.sleep(1)
-                                    result = self.dashboard.close_position(self.product_id)
-                                    
-                                    if result:
-                                        logger.info("✅ Позиция закрыта по риску")
-                                        self.prev_size = 0
-                                        self.entry_count = 0
-                                        self.position_side = None
-                                        self.avg_entry_price = 0
-                                        self.risk_check_start_time = None
-                                        await asyncio.sleep(2)
-                                        await self._place_grid(place_long=True, place_short=True, long_size=self.base_size, short_size=self.base_size)
-                                    continue  # Переходим к следующей итерации цикла
-                                else:
-                                    logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров")
-                        else:
+                        if not curr_price:
                             logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров (нет цены)")
+                        else:
+                            # ВЫБОР СТРАТЕГИИ ПРОВЕРКИ
+                            if self.strategy_mode == "candle_restart":
+                                # НОВАЯ: Фикс -$5 убытка
+                                pnl = self._calculate_pnl(our_pos)
+                                
+                                if pnl <= -self.MAX_LOSS_USD:
+                                    logger.info(f"🛑 SL СРАБОТАЛ! PnL: ${pnl:.2f} (limit: -${self.MAX_LOSS_USD})")
+                                    logger.info(f"🎯 Стратегия: НОВАЯ (candle_restart)")
+                                    
+                                    # Закрываем позицию
+                                    await self._cancel_all()
+                                    await asyncio.sleep(0.5)
+                                    await self._close_position()
+                                    
+                                    # Ждем противоположную свечу
+                                    candle = self._get_last_candle()
+                                    if candle:
+                                        close_color = "RED" if candle['close'] < candle['open'] else "GREEN"
+                                        logger.info(f"📊 Закрылись на {close_color} свече")
+                                        await self._wait_for_opposite_candle(close_color)
+                                        await self._restart_grid()
+                                    else:
+                                        logger.warning("⚠️ Не удалось получить свечу - перезапуск сразу")
+                                        await self._restart_grid()
+                                    
+                                    continue
+                                else:
+                                    logger.info(f"📊 {curr_side}: {curr_size:.2f} | PnL: ${pnl:.2f} | {orders_count} ордеров")
+                            
+                            else:
+                                # СТАРАЯ: Отклонение 0.5% от средней цены входа
+                                if curr_side == "LONG":
+                                    deviation = (self.avg_entry_price - curr_price) / self.avg_entry_price
+                                    threshold_price = self.avg_entry_price * 0.995
+                                    
+                                    if curr_price < threshold_price:
+                                        logger.info(f"⚠️ Цена ${curr_price:.2f} < ${threshold_price:.2f} (-0.5% от средней)")
+                                        logger.info(f"🔴 РИСК: Цена ушла вниз → ЗАКРЫВАЕМ СРАЗУ (СТАРАЯ СТРАТЕГИЯ)")
+                                        
+                                        await self._cancel_all()
+                                        await asyncio.sleep(1)
+                                        result = self.dashboard.close_position(self.product_id)
+                                        
+                                        if result:
+                                            logger.info("✅ Позиция закрыта по риску (0.5%)")
+                                            await self._restart_grid()
+                                        continue
+                                    else:
+                                        logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров")
+                                
+                                else:  # SHORT
+                                    deviation = (curr_price - self.avg_entry_price) / self.avg_entry_price
+                                    threshold_price = self.avg_entry_price * 1.005
+                                    
+                                    if curr_price > threshold_price:
+                                        logger.info(f"⚠️ Цена ${curr_price:.2f} > ${threshold_price:.2f} (+0.5% от средней)")
+                                        logger.info(f"🔴 РИСК: Цена ушла вверх → ЗАКРЫВАЕМ СРАЗУ (СТАРАЯ СТРАТЕГИЯ)")
+                                        
+                                        await self._cancel_all()
+                                        await asyncio.sleep(1)
+                                        result = self.dashboard.close_position(self.product_id)
+                                        
+                                        if result:
+                                            logger.info("✅ Позиция закрыта по риску (0.5%)")
+                                            await self._restart_grid()
+                                        continue
+                                    else:
+                                        logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров")
                     else:
                         logger.info(f"📊 {curr_side}: {curr_size:.2f} | {orders_count} ордеров")
                     
