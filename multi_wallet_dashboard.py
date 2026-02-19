@@ -140,6 +140,10 @@ class MultiWalletDashboard:
     def leverage(self):
         return self.get_current_dashboard().leverage
     
+    @leverage.setter
+    def leverage(self, value):
+        self.get_current_dashboard().leverage = value
+    
     @property
     def network(self):
         return self.get_current_dashboard().network

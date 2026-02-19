@@ -371,16 +371,18 @@ class TradingDashboard:
     def get_balance(self):
         """Получить баланс аккаунта"""
         try:
-            # Используем subaccount_hex для получения баланса (если есть)
             sender = getattr(self, 'subaccount_hex', self.sender_hex)
             summary = self.client.subaccount.get_engine_subaccount_summary(sender)
             
             if hasattr(summary, 'healths') and summary.healths and len(summary.healths) > 0:
                 health = summary.healths[0]
+                # Total Equity = healths[2].health (maintenance health with full perp value)
+                total_equity = float(summary.healths[2].health) / 1e18 if len(summary.healths) > 2 else (float(health.assets) - float(health.liabilities)) / 1e18
                 return {
                     "assets": float(health.assets) / 1e18,
                     "liabilities": float(health.liabilities) / 1e18,
                     "equity": (float(health.assets) - float(health.liabilities)) / 1e18,
+                    "total_equity": total_equity,
                     "health": float(health.health) / 1e18
                 }
         except Exception as e:
