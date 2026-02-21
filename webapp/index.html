@@ -267,22 +267,21 @@
 </div>
 
 <!-- POSITIONS PAGE -->
-<div class="page" id="page-autobot" style="display:none">
-  <div style="padding:60px 20px;text-align:center">
-    <div style="font-size:56px;margin-bottom:16px">🤖</div>
+<div class="page" id="page-positions">
+  <div class="section" style="margin-top:12px;">
+    <div class="section-title">Open Positions</div>
     <div class="positions-list" id="positions-list"><div class="loading">Loading...</div></div>
   </div>
 </div>
 
 <!-- PRICES PAGE -->
-<div class="page" id="page-positions">
-  <div class="section" style="margin-top:12px;">
-    <div class="section-title">Open Positions</div>
+<div class="page" id="page-autobot">
+  <div style="padding:60px 20px;text-align:center">
+    <div style="font-size:56px;margin-bottom:16px">🤖</div>
     <div style="font-size:20px;font-weight:700;margin-bottom:10px">Авто-торговля</div>
     <div style="color:var(--sub);font-size:14px;line-height:1.6">Функция в разработке.<br>Скоро здесь появится автоматическая торговля.</div>
   </div>
 </div>
-
     <div class="prices-list" id="prices-list"><div class="loading">Loading...</div></div>
   </div>
 </div>
@@ -609,7 +608,7 @@ async function loadPrices() {
     if (!d.ok) return;
     prices = d.prices||{};
     updateSelectorDisplay();
-    
+    // prices page removed
   } catch(e) {}
 }
 
