@@ -228,7 +228,7 @@
           <div class="pair-icon" id="sel-icon" style="background:#1e3a5f">₿</div>
           <div>
             <div class="pair-name" id="sel-name">ETH-PERP</div>
-            <div class="pair-price" id="sel-price">Loading...</div>
+            <div class="pair-price" id="sel-price">—</div>
           </div>
         </div>
         <div class="pair-arrow">›</div>
@@ -282,7 +282,7 @@
     <div style="color:var(--sub);font-size:14px;line-height:1.6">Функция в разработке.<br>Скоро здесь появится автоматическая торговля.</div>
   </div>
 </div>
-    <div class="prices-list" id="prices-list"><div class="loading">Loading...</div></div>
+    
   </div>
 </div>
 
@@ -943,9 +943,7 @@ async function renderTrades() {
 
 // ── Init ──
 loadBalance();
-loadPrices();
 setInterval(loadBalance, 30000);
-setInterval(loadPrices, 15000);
 </script>
 </body>
 </html>
